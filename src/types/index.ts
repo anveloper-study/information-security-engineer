@@ -48,3 +48,19 @@ export interface UserProgress {
   wrongAnswers: WrongAnswer[];
   lastStudyDate: string;
 }
+
+// 실기 과목 타입
+export type PracticalSubject =
+  | 'system-security'
+  | 'network-security'
+  | 'application-security'
+  | 'security-general'
+  | 'security-management';
+
+export const PRACTICAL_SUBJECTS: Record<PracticalSubject, string> = {
+  'system-security': '시스템 보안',
+  'network-security': '네트워크 보안',
+  'application-security': '어플리케이션 보안',
+  'security-general': '정보보안 일반',
+  'security-management': '정보보안 관리 및 법규',
+};
