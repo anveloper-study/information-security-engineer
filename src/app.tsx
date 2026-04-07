@@ -1,6 +1,20 @@
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { Layout, ScrollToTop } from "./components";
-import { Home, Theory, Quiz, MockExam, SubjectQuiz, QuizDetail, SubjectTheory, TheoryDetail, WrongAnswers } from "./pages";
+import {
+  Home,
+  Theory,
+  Quiz,
+  MockExam,
+  SubjectQuiz,
+  QuizDetail,
+  SubjectTheory,
+  TheoryDetail,
+  WrongAnswers,
+  PracticalHome,
+  PracticalTerms,
+  PracticalDescriptive,
+  PracticalHandsOn,
+} from "./pages";
 
 function App() {
   return (
@@ -17,6 +31,10 @@ function App() {
           <Route path="/quiz/:subject/:chapter" element={<QuizDetail />} />
           <Route path="/wrong-answers" element={<WrongAnswers />} />
           <Route path="/mock-exam" element={<MockExam />} />
+          <Route path="/practical" element={<PracticalHome />} />
+          <Route path="/practical/terms" element={<PracticalTerms />} />
+          <Route path="/practical/descriptive" element={<PracticalDescriptive />} />
+          <Route path="/practical/hands-on" element={<PracticalHandsOn />} />
         </Routes>
       </Layout>
     </BrowserRouter>

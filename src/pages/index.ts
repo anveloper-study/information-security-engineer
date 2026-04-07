@@ -7,3 +7,7 @@ export { default as SubjectQuiz } from './subject-quiz';
 export { default as QuizDetail } from './quiz-detail';
 export { default as WrongAnswers } from './wrong-answers';
 export { default as MockExam } from './mock-exam';
+export { default as PracticalHome } from './practical-home';
+export { default as PracticalTerms } from './practical-terms';
+export { default as PracticalDescriptive } from './practical-descriptive';
+export { default as PracticalHandsOn } from './practical-hands-on';
