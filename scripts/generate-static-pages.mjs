@@ -135,6 +135,31 @@ routes.push({
   title: "모의고사",
   description: "정보보안기사 모의고사 - 실전 시험 형식으로 연습",
 });
+routes.push({
+  path: "/practical",
+  title: "실기 대비",
+  description: "정보보안기사 실기 시험 대비 - 핵심 요약, 약어/용어, 서술형, 실무형",
+});
+routes.push({
+  path: "/practical/summary",
+  title: "핵심 요약 - 실기 대비",
+  description: "정보보안기사 실기 시험 대비 전 과목 핵심 요약 정리",
+});
+routes.push({
+  path: "/practical/terms",
+  title: "약어/용어 - 실기 대비",
+  description: "정보보안기사 실기 시험 대비 필수 약어와 핵심 용어 암기",
+});
+routes.push({
+  path: "/practical/descriptive",
+  title: "서술형 - 실기 대비",
+  description: "정보보안기사 실기 시험 대비 서술형 답안 연습",
+});
+routes.push({
+  path: "/practical/hands-on",
+  title: "실무형 - 실기 대비",
+  description: "정보보안기사 실기 시험 대비 실무형 문제 풀이",
+});
 
 // 2. 과목별 동적 라우트 (이론 + 문제풀이)
 const theoryDirs = existsSync(join(SRC, "content/theory"))

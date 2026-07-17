@@ -11,3 +11,4 @@ export { default as PracticalHome } from './practical-home';
 export { default as PracticalTerms } from './practical-terms';
 export { default as PracticalDescriptive } from './practical-descriptive';
 export { default as PracticalHandsOn } from './practical-hands-on';
+export { default as PracticalSummary } from './practical-summary';

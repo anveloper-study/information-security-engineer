@@ -12,6 +12,7 @@ const WRITTEN_NAV_ITEMS = [
 ];
 
 const PRACTICAL_NAV_ITEMS = [
+  { path: "/practical/summary", label: "핵심 요약" },
   { path: "/practical/terms", label: "약어/용어" },
   { path: "/practical/descriptive", label: "서술형" },
   { path: "/practical/hands-on", label: "실무형" },

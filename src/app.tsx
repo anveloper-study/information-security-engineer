@@ -14,6 +14,7 @@ import {
   PracticalTerms,
   PracticalDescriptive,
   PracticalHandsOn,
+  PracticalSummary,
 } from "./pages";
 
 function App() {
@@ -35,6 +36,7 @@ function App() {
           <Route path="/practical/terms" element={<PracticalTerms />} />
           <Route path="/practical/descriptive" element={<PracticalDescriptive />} />
           <Route path="/practical/hands-on" element={<PracticalHandsOn />} />
+          <Route path="/practical/summary" element={<PracticalSummary />} />
         </Routes>
       </Layout>
     </BrowserRouter>
