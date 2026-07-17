@@ -1,0 +1,237 @@
+> 섹션 11은 DB 보안 위협 3종(집계·추론·Data Diddling), SQL 4분류(DDL/DML/DCL/TCL), GRANT/REVOKE 문법, View 활용, DB 암호화 방식(API/Plug-in/TDE)이 반복 출제되는 핵심 섹션입니다. 특히 Oracle DB 보안 설정과 GRANT/REVOKE SQL 문을 직접 작성하는 서술형이 자주 나옵니다.
+
+## 1. 개념 및 배경
+
+데이터베이스는 조직의 핵심 정보 자산이므로 접근 제어, 권한 관리, 암호화, 감사 로그가 핵심 보안 요소입니다. DB 보안은 단순 해킹뿐만 아니라 내부자에 의한 정보 추론·집계 공격도 주요 위협으로 다루며, 이를 막기 위한 View, 최소 권한 원칙, 접근 통제가 중요합니다.
+
+## 2. 동작 원리 / 구조
+
+### ⚠️ DB 보안 3대 위협 (시험 단골 암기!)
+
+| 위협 | 설명 | 예시 |
+| --- | --- | --- |
+| 집계 (Aggregation) | 개별 데이터는 낮은 등급이지만, 여러 데이터를 합산하면 민감 정보가 됨 | 이름·주소·전화번호 각각은 공개 정보이나 합치면 개인정보 침해 |
+| 추론 (Inference) | 공개된 낮은 등급의 정보에서 높은 등급의 비밀 정보를 유추 | 월급 총합과 구성원 수로 개인 급여 추정 |
+| Data Diddling | 입력·출력 데이터를 몰래 변조하는 공격 | 회계 데이터 조작, 성적 위변조 |
+
+> 📌 집계 vs 추론 구분: 집계는 여러 데이터를 모아서 민감 정보가 됨, 추론은 공개 정보에서 논리적으로 유추하여 비밀 정보 획득
+
+### 📊 SQL 분류 4가지 (DDL/DML/DCL/TCL)
+
+빈칸 채우기 단골 출제!
+
+| 분류 | 영문명 | 주요 명령어 | 설명 |
+| --- | --- | --- | --- |
+| DDL | Data Definition Language | `CREATE`, `DROP`, `ALTER` | 테이블·구조 정의 |
+| DML | Data Manipulation Language | `SELECT`, `INSERT`, `UPDATE`, `DELETE` | 데이터 조작 |
+| DCL | Data Control Language | `GRANT`, `REVOKE` | 권한 부여/취소 |
+| TCL | Transaction Control Language | `COMMIT`, `ROLLBACK` | 트랜잭션 제어 |
+
+### 🔐 GRANT / REVOKE 권한 관리
+
+서술형에서 SQL 직접 작성 요구 — 문법 완벽 암기 필수!
+
+기본 문법
+
+```sql
+-- 권한 부여
+GRANT 권한 ON 객체 TO 사용자;
+
+-- 권한 취소
+REVOKE 권한 ON 객체 FROM 사용자;
+
+-- 거부 (SQL Server)
+DENY 권한 ON 객체 TO 사용자;
+```
+
+Oracle DB 실전 예시
+
+```sql
+-- 1. 읽기 전용 역할 생성
+CREATE ROLE USERREADONLY;
+
+-- 2. 역할에 SELECT 권한 부여
+GRANT SELECT ON CUSTOMER_TABLE TO USERREADONLY;
+
+-- 3. 사용자에게 역할 부여
+GRANT USERREADONLY TO username;
+
+-- 4. DB 접근 감사 로그 설정
+AUDIT SELECT, INSERT, UPDATE, DELETE ON CUSTOMER_TABLE BY ACCESS;
+AUDIT SESSION BY ACCESS;
+```
+
+Oracle DB 보안 설정 체크리스트
+
+```sql
+-- 취약한 설정 제거 예시
+-- 1. DBA 계정 최소화 (불필요한 DBA 역할 제거)
+-- 2. Public 역할에서 민감 권한 제거
+-- 3. OS 인증 비활성화
+ALTER SYSTEM SET OS_ROLES = FALSE;
+ALTER SYSTEM SET REMOTE_OS_AUTHENTICATION = FALSE;
+ALTER SYSTEM SET REMOTE_OS_ROLES = FALSE;
+
+-- 4. DB IP 접근 제한 설정
+-- 5. 감사(Audit) 로그 활성화
+```
+
+### 👁️ View (뷰) — 접근 통제 수단
+
+View는 테이블의 일부 컬럼·행만 보여주는 가상 테이블로, 민감 데이터 접근을 통제하는 핵심 수단입니다.
+
+```sql
+-- 예: 직원 테이블에서 급여 컬럼을 숨기는 View 생성
+CREATE VIEW emp_view AS
+SELECT emp_id, emp_name, department
+FROM employee
+WHERE department = '영업부';
+
+-- 사용자에게 View에 대한 SELECT 권한만 부여
+GRANT SELECT ON emp_view TO user1;
+-- 원본 테이블(employee)의 salary 컬럼은 접근 불가
+```
+
+View의 보안 효과
+
+- 민감한 컬럼(급여, 주민번호 등) 숨김
+- 행 단위 접근 제어 가능 (WHERE 조건으로 특정 부서만 노출)
+- 집계·추론 공격 방어에 활용
+
+### 🔍 보완: DB 접근통제 모델 (DAC 중심)
+
+관계형 DB의 GRANT/REVOKE는 **DAC(임의적 접근통제, Discretionary Access Control)** 모델에 기반합니다. 데이터 소유자(객체 생성자)가 자신의 재량으로 다른 사용자에게 권한을 부여·회수하는 방식입니다.
+
+| 접근통제 모델 | 권한 결정 주체 | DB 적용 |
+| --- | --- | --- |
+| DAC | 데이터 소유자(사용자) 재량 | 표준 SQL의 GRANT/REVOKE (관계형 DBMS 기본) |
+| MAC | 시스템(보안등급·규칙) | 등급 기반 DB, 다단계 보안(MLS) DB |
+| RBAC | 역할(Role)에 권한 매핑 | `CREATE ROLE`+GRANT (Oracle 등 실무 표준) |
+
+> 📌 GRANT `WITH GRANT OPTION`: 부여받은 권한을 제3자에게 다시 위임 가능. DAC의 전형적 특징이며, REVOKE 시 연쇄(cascade) 회수가 발생할 수 있으므로 주의합니다.
+
+### 🔍 보완: 감사(Audit) — DB 책임추적성 확보
+
+감사는 "누가·언제·무엇을" 했는지 기록하여 사후 추적성(Accountability)을 보장하는 보안 요소입니다. 접근통제가 사전 예방이라면 감사는 사후 탐지·증적 수단입니다.
+
+```sql
+-- Oracle 표준 감사 (BY ACCESS: 접근할 때마다 1건씩 로그)
+AUDIT SELECT, INSERT, UPDATE, DELETE ON CUSTOMER_TABLE BY ACCESS;
+AUDIT SESSION BY ACCESS;          -- 로그인/로그아웃 감사
+
+-- BY SESSION: 세션당 1건으로 요약 (BY ACCESS와 대비)
+AUDIT SELECT ON CUSTOMER_TABLE BY SESSION;
+```
+
+- `BY ACCESS` vs `BY SESSION`: 접근 단위 상세 기록 vs 세션 단위 요약 기록
+- 감사 로그는 별도 보관·무결성 보호가 필요하며, 관리자 자신의 조작도 감사 대상에 포함해야 함(내부자 위협 대응)
+
+### 🔒 DB 암호화 방식 3가지
+
+빈칸 채우기로 자주 출제!
+
+| 방식 | 동작 위치 | 원리 | 장단점 |
+| --- | --- | --- | --- |
+| API | 애플리케이션 | 애플리케이션 코드에서 직접 암·복호화 API 호출 | 세밀한 제어 가능, 앱 수정 필요 |
+| Plug-in | DBMS 엔진 | DBMS에 암호화 모듈 플러그인 삽입 | 앱 수정 최소화, DBMS 의존성 |
+| TDE (Transparent Data Encryption) | OS / DBMS | 투명하게 파일·테이블스페이스 단위 암호화, 앱·쿼리 변경 불필요 | 관리 편리, 파일 유출 시 보호 |
+
+> 📌 TDE 핵심: 애플리케이션과 DBMS 쿼리는 변경 없이, OS 수준의 파일이 암호화되어 물리적 디스크 탈취 시 보호
+
+> 🔍 **보완**: 세 방식의 핵심 구분 축은 **암·복호화 주체와 앱 수정 여부**입니다. API=애플리케이션이 직접 암·복호화(앱 수정 필요, 컬럼 단위 세밀 제어), Plug-in=DBMS 엔진의 모듈이 처리(앱 수정 최소·SQL은 그대로), TDE=OS/DBMS가 저장 파일을 투명하게 암호화(앱·쿼리 무수정, 저장 데이터 보호에 특화하나 실행 중 메모리·전송 구간은 미보호). TDE는 "저장 시(at-rest)" 보호이므로 전송 구간은 SSL/TLS로 별도 보호해야 합니다.
+
+### 🛢️ MySQL 보안 설정
+
+MySQL 주요 보안 설정 항목
+
+```bash
+# /etc/my.cnf
+
+# 1. 원격 접속 차단 (로컬에서만 접속 허용)
+skip-networking      # ← 네트워크 인터페이스 비활성화
+
+# 2. 특정 사용자·호스트만 접근 허용
+user = mysql         # ← MySQL 전용 계정으로 실행
+host = localhost     # ← 로컬 호스트만 허용
+
+# 3. 기본 포트 확인
+# MySQL: 3306/tcp
+```
+
+```bash
+# MySQL 버전 확인 (배너 그래빙 방어 필요)
+mysql -V
+mysql --version
+```
+
+```sql
+-- root 계정 원격 접속 차단 확인
+SELECT user, host FROM mysql.user WHERE user='root';
+-- host가 '%'(전체 허용)이면 취약 → 'localhost'로 변경
+```
+
+### 🔍 DB 보안 취약점 점검 항목
+
+실무·시험에서 DB 보안 점검 항목으로 출제
+
+Oracle DB 보안 점검
+
+| 점검 항목 | 취약 상태 | 조치 방법 |
+| --- | --- | --- |
+| 불필요한 계정 | 기본 계정(SCOTT, DEMO 등) 활성화 | `DROP USER` 또는 잠금 |
+| 과도한 권한 | DBA Role이 일반 사용자에게 부여 | `REVOKE DBA FROM username` |
+| Public 권한 | Public Role에 민감 권한 부여 | Public 권한 최소화 |
+| OS 인증 허용 | `REMOTE_OS_AUTHENTICATION=TRUE` | `FALSE`로 변경 |
+| 감사 로그 미설정 | AUDIT 비활성화 | `AUDIT` 명령으로 활성화 |
+| 평문 전송 | DB 연결 시 암호화 없음 | SSL/TLS 적용 |
+
+## 3. 예시 / 적용 시나리오
+
+### 기출 시나리오: DB 암호화 3가지 방식 설명
+
+```text
+A = API 방식: 애플리케이션에서 암호화 API를 직접 호출하여
+    데이터를 암·복호화하는 방식
+
+B = Plug-in 방식: DBMS 엔진에 암호화 플러그인을 삽입하여
+    DB 내부에서 자동으로 암·복호화 처리
+
+C = TDE(Transparent Data Encryption): DBMS나 OS 수준에서
+    투명하게 파일 단위로 암호화, 애플리케이션 수정 불필요
+```
+
+### 기출 시나리오: Oracle DB 보안 설정 4가지
+
+```text
+1. 불필요한 계정 제거/잠금 (CREATE USER → DROP USER)
+2. DBA 권한 최소화 (DBA Role을 일반 사용자에게 미부여)
+3. DBA Role과 Public Role 권한 분리
+4. OS_ROLES, REMOTE_OS_AUTHENTICATION, REMOTE_OS_ROLES = FALSE 설정
+   (OS 인증을 통한 DB 접속 차단)
+5. 감사(AUDIT) 활성화 — SELECT, INSERT, UPDATE, DELETE 감사
+```
+
+### 기출 시나리오: SW 개발 단계 DB 보안 3가지
+
+1. DB 암호화 (API/Plug-in/TDE 방식)
+2. SQL Injection 방어 (Prepared Statement 적용)
+3. 최소 권한 원칙 (GRANT/REVOKE로 필요한 권한만 부여)
+
+## 4. 실무 및 시험 포인트 정리
+
+| 주제 | 핵심 암기 내용 | 출제 빈도 |
+| --- | --- | --- |
+| DB 3대 위협 | 집계(Aggregation), 추론(Inference), Data Diddling | ⭐⭐⭐ |
+| SQL 4분류 | DDL(CREATE/DROP/ALTER), DML(SELECT/INSERT/UPDATE/DELETE), DCL(GRANT/REVOKE), TCL(COMMIT/ROLLBACK) | ⭐⭐⭐ |
+| GRANT/REVOKE 문법 | GRANT 권한 ON 객체 TO 사용자 / REVOKE 권한 ON 객체 FROM 사용자 | ⭐⭐⭐ |
+| DB 암호화 3종 | API(앱 계층), Plug-in(DBMS 엔진), TDE(OS/파일 단위 투명 암호화) | ⭐⭐⭐ |
+| View 활용 | 민감 컬럼 숨김, 행 단위 접근 제어, 집계·추론 공격 방어 | ⭐⭐⭐ |
+| 접근통제 모델 | DAC(소유자 재량·GRANT/REVOKE), MAC(등급), RBAC(역할) | ⭐⭐ |
+| 감사(Audit) | AUDIT 문, BY ACCESS vs BY SESSION, 책임추적성 확보 | ⭐⭐ |
+| Oracle 보안 설정 | 불필요 계정 제거, DBA 권한 최소화, OS 인증 차단, AUDIT 활성화 | ⭐⭐⭐ |
+| MySQL 보안 설정 | skip-networking, 3306/tcp, root 원격 접속 차단 | ⭐⭐ |
+| TDE 개념 | 투명 암호화, 앱·쿼리 수정 불필요, 파일 유출 시 보호 | ⭐⭐ |
+| DENY | SQL Server 전용, 명시적 권한 거부 (GRANT보다 우선) | ⭐⭐ |
+| Aggregation vs Inference | 집계=여러 데이터 합산, 추론=공개 정보에서 비밀 유추 | ⭐⭐ |
+
+> 📌 서술형 고득점 전략: DB 암호화 문제는 API/Plug-in/TDE 3가지의 동작 위치(앱 계층/DBMS 엔진/OS)와 핵심 특징을 구분하여 서술하세요. GRANT/REVOKE 문제는 반드시 문법(GRANT 권한 ON 객체 TO 사용자)을 정확히 작성하고, View와 최소 권한 원칙을 함께 언급하면 고득점입니다.

@@ -1,0 +1,199 @@
+> 섹션 04는 OSI 7계층 구조, TCP/IP 프로토콜, ARP/RARP/ICMP 동작 원리, TCP 3-Way/4-Way Handshake, 포트 번호, IP 단편화가 매 시험마다 반복 출제되는 최빈출 영역입니다.
+
+## 1. 개념 및 배경
+
+네트워크 보안 공격(스니핑·스푸핑·DoS 등)은 모두 계층별 프로토콜의 취약점을 이용하므로, OSI 7계층과 각 계층의 프로토콜·PDU를 먼저 완벽히 이해해야 합니다.
+
+## 2. 동작 원리 / 구조
+
+### 📡 OSI 7계층 vs TCP/IP 4계층
+
+| OSI 계층 | 이름 | PDU | 주요 프로토콜·장비 | TCP/IP |
+| --- | --- | --- | --- | --- |
+| 7 | 응용(Application) | Data | HTTP, FTP, SMTP, DNS | 응용 계층 |
+| 6 | 표현(Presentation) | Data | 암호화, 압축, 인코딩 | 응용 계층 |
+| 5 | 세션(Session) | Data | 세션 수립·유지·종료 | 응용 계층 |
+| 4 | 전송(Transport) | Segment | TCP, UDP, SCTP → L4 SLB | 전송 계층 |
+| 3 | 네트워크(Network) | Packet | IP, ICMP, IGMP, ARP, RARP | 인터넷 계층 |
+| 2 | 데이터링크(Data Link) | Frame | Ethernet, MAC, LLC → 스위치 | 네트워크 액세스 |
+| 1 | 물리(Physical) | Bit | 케이블, 허브, 리피터 | 네트워크 액세스 |
+
+### 🔌 주요 포트 번호 (시험 단골!)
+
+| 포트 | 프로토콜 | 서비스 |
+| --- | --- | --- |
+| `20/TCP` | FTP | 데이터 전송 |
+| `21/TCP` | FTP | 제어(연결) |
+| `22/TCP` | SSH | 암호화 원격 접속 |
+| `23/TCP` | Telnet | 원격 접속 (비암호화) |
+| `25/TCP` | SMTP | 메일 전송 |
+| `53/TCP, UDP` | DNS | 도메인 이름 해석 |
+| `67/UDP` | DHCP | 서버 (주소 할당) |
+| `68/UDP` | DHCP | 클라이언트 |
+| `80/TCP` | HTTP | 웹 |
+| `110/TCP` | POP3 | 메일 수신 |
+| `143/TCP` | IMAP | 메일 수신 (서버 저장) |
+| `161/UDP` | SNMP | 네트워크 관리 (Polling) |
+| `162/UDP` | SNMP Trap | 이벤트 보고 (Agent→Manager) |
+| `443/TCP` | HTTPS | 암호화 웹 |
+
+### 🔁 ARP / RARP / GARP
+
+**ARP (Address Resolution Protocol)** — IP → MAC 변환
+
+1. 목적지 MAC 모름 → ARP Request (브로드캐스트: `FF:FF:FF:FF:FF:FF`)
+2. 해당 IP 보유 장비 → ARP Reply (유니캐스트)
+3. 결과를 ARP Cache에 저장
+
+```bash
+arp -a            # ARP 캐시 테이블 조회
+arp -d            # ARP 캐시 삭제
+arp -s IP MAC     # 정적 ARP 등록 (ARP 스푸핑 방어)
+```
+
+**RARP** — MAC → IP 변환, 디스크 없는 단말에서 사용. 현재는 DHCP로 대체
+
+**GARP (Gratuitous ARP)** — 자신의 IP로 ARP Request를 보내 IP 충돌 감지 및 ARP Cache 갱신. ARP 스푸핑에 악용될 수 있음
+
+> 🔍 **보완 (ARP Spoofing 방어)**: ARP는 인증이 없어 위조 Reply로 캐시를 오염시킬 수 있습니다(중간자 공격·세션 하이재킹). 대응은 ① 게이트웨이·주요 서버 MAC을 `arp -s`로 **정적(static) ARP 등록**, ② 스위치의 **DAI(Dynamic ARP Inspection)** 및 **DHCP Snooping** 적용, ③ `arp -a`로 동일 MAC이 여러 IP에 매핑되는 이상 탐지.
+
+### 🌐 IP (IPv4) 헤더 핵심 필드
+
+| 필드 | 설명 |
+| --- | --- |
+| `Identification` | 단편화 시 같은 원본 패킷끼리 동일 ID |
+| `Flags` | 단편화 허용 여부 (DF, MF 비트) |
+| `Fragment Offset` | 원본에서의 위치 (8바이트 단위) |
+| `TTL` | Windows 기본 128, Linux 기본 64. 라우터 경유 시 1씩 감소 → 0이면 폐기 |
+| `Protocol` | 상위 프로토콜 (TCP=6, UDP=17, ICMP=1) |
+
+**IP 단편화 예시 (MTU=1500byte, Payload=3008byte)**
+
+```text
+원본: 3008byte → MTU 1500 초과
+ 1번 단편: ID=22666, Offset=0,    크기=1480byte
+ 2번 단편: ID=22666, Offset=1480, 크기=1480byte
+ 3번 단편: ID=22666, Offset=2960, 크기=48byte
+→ Teardrop 공격은 이 Offset을 조작하여 OS를 충돌시킴
+```
+
+### 📬 ICMP (Internet Control Message Protocol)
+
+ICMP는 IP 계층의 오류 보고 및 진단 프로토콜
+
+| Type 번호 | 이름 | 사용 |
+| --- | --- | --- |
+| Type 0 | Echo Reply | ping 응답 |
+| Type 3 | Destination Unreachable | 목적지 도달 불가 |
+| Type 5 | Redirect | 경로 변경 요청 (ICMP Redirect 공격에 악용) |
+| Type 8 | Echo Request | ping 요청 |
+| Type 11 | Time Exceeded | TTL 만료 (traceroute에서 활용) |
+
+> 🔍 **보완 (Smurf 공격)**: 출발지 IP를 피해자로 위조(스푸핑)한 ICMP Echo Request를 네트워크 **브로드캐스트 주소**로 전송 → 해당 대역 다수 호스트가 피해자에게 Echo Reply를 쏟아부어 대역폭을 고갈시키는 증폭형 DDoS. 방어는 라우터에서 `no ip directed-broadcast`(디렉티드 브로드캐스트 차단)와 유입 스푸핑 패킷 차단(Ingress 필터링).
+
+**ping 명령어**
+
+```bash
+# Windows
+ping -n 5 -l 128 www.google.com    # 5회, 패킷 크기 128byte
+# Linux
+ping -c 5 -s 128 www.google.com    # 5회, 패킷 크기 128byte
+```
+
+### 🔗 TCP vs UDP
+
+| 구분 | TCP | UDP |
+| --- | --- | --- |
+| 연결 | 연결 지향 (3-Way Handshake) | 비연결 지향 |
+| 신뢰성 | 높음 (재전송, 순서 보장) | 낮음 |
+| 속도 | 느림 | 빠름 |
+| PDU | Segment | Datagram |
+| 사용 예 | HTTP, FTP, SMTP, SSH | DNS, DHCP, SNMP, NTP |
+
+**TCP 제어 플래그 (6bit)**
+
+| 플래그 | 비트값 | 의미 |
+| --- | --- | --- |
+| FIN | `000001` | 연결 종료 요청 |
+| SYN | `000010` | 연결 동기화 (연결 시작) |
+| RST | `000100` | 연결 강제 초기화 |
+| PSH | `001000` | 즉시 전달 요청 |
+| ACK | `010000` | 수신 확인 |
+| URG | `100000` | 긴급 데이터 |
+
+**MSS (Maximum Segment Size)** = MTU(1500) - IP 헤더(20) - TCP 헤더(20) = **1460byte**
+
+### 🤝 TCP 3-Way / 4-Way Handshake
+
+**3-Way Handshake (연결 수립)**
+
+```text
+1. 클라이언트 → 서버: SYN     (Seq=1000, Ack=-)
+2. 서버 → 클라이언트: SYN+ACK (Seq=2000, Ack=1001)
+3. 클라이언트 → 서버: ACK     (Seq=1001, Ack=2001)
+```
+
+**4-Way Handshake (연결 종료)**
+
+```text
+1. 클라이언트 → 서버: FIN+ACK (Seq=2200, Ack=3300)
+2. 서버 → 클라이언트: ACK     (Seq=3300, Ack=2201)
+3. 서버 → 클라이언트: FIN+ACK (Seq=3300, Ack=2202)
+4. 클라이언트 → 서버: ACK     (Seq=2202, Ack=3301)
+```
+
+> 📌 ACK 번호 = 상대방 Seq 번호 + 1 이 핵심 공식
+
+### 📊 traceroute / tracert 동작 원리
+
+**traceroute (Linux)** — UDP + TTL 증가 방식
+
+```text
+TTL=1 패킷 전송 → 1번 라우터에서 TTL=0 → ICMP Time Exceeded 반환
+TTL 1씩 증가 → 목적지까지 경로 추적
+최종: 목적지에서 ICMP Destination Unreachable 수신 → 종료
+```
+
+**tracert (Windows)** — ICMP Echo Request + TTL 증가 방식
+
+### 🖥️ 스위치 프레임 처리 방식
+
+| 방식 | 기준 | 특징 |
+| --- | --- | --- |
+| Store-and-Forward | 전체 프레임 수신 후 전송 | 오류 검사 가능, 느림 |
+| Cut-Through | 6byte(목적지 MAC) 확인 후 전송 | 빠름, 오류 검사 없음 |
+| Fragment-Free | 64byte 확인 후 전송 (Modified Cut-Through) | 절충안 |
+
+## 3. 예시 / 적용 시나리오
+
+### 시나리오: 기출 서술형 — TCP Handshake와 Seq/Ack 번호
+
+```text
+Client → Server: SYN, Seq=3478
+Server → Client: SYN+ACK, Seq=2324, Ack=A
+Client → Server: ACK, Seq=B, Ack=C
+```
+
+```text
+A = 3478 + 1 = 3479
+B = 3479 (이전 Ack값)
+C = 2324 + 1 = 2325
+```
+
+## 4. 실무 및 시험 포인트 정리
+
+| 주제 | 핵심 암기 내용 | 출제 빈도 |
+| --- | --- | --- |
+| OSI 7계층 PDU | Bit→Frame→Packet→Segment→Data | ⭐⭐⭐ |
+| 주요 포트번호 | FTP 20/21, SSH 22, DNS 53, HTTP 80, SNMP 161/162 | ⭐⭐⭐ |
+| TCP 플래그 6개 | FIN/SYN/RST/PSH/ACK/URG + 비트값 | ⭐⭐⭐ |
+| 3-Way Handshake | Seq/Ack 번호 계산 공식 | ⭐⭐⭐ |
+| ICMP Type 번호 | 0(Reply), 3(Unreachable), 5(Redirect), 8(Request), 11(TTL초과) | ⭐⭐⭐ |
+| ARP/RARP/GARP | 동작 방향 (IP↔MAC), GARP의 스푸핑 악용 | ⭐⭐⭐ |
+| IP TTL 기본값 | Windows=128, Linux=64 | ⭐⭐ |
+| MSS 계산 | MTU(1500) - IP헤더(20) - TCP헤더(20) = 1460 | ⭐⭐ |
+| IP 단편화 | ID 동일, Offset 계산, Teardrop 공격 원리 | ⭐⭐ |
+| 스위치 처리 방식 | Store-and-Forward / Cut-Through / Fragment-Free | ⭐⭐ |
+| traceroute vs tracert | UDP+TTL vs ICMP+TTL, ICMP Time Exceeded 활용 | ⭐⭐ |
+
+> 📌 서술형 고득점 전략: TCP Handshake 문제는 반드시 Seq·Ack 번호 계산을 표로 작성하세요. ICMP Type 번호는 ping과 traceroute 공격·방어 문제 전반에 걸쳐 활용되므로 5개 타입을 필수 암기하세요.

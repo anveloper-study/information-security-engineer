@@ -1,0 +1,313 @@
+> 섹션 09는 Apache httpd.conf 설정 명령어를 직접 작성하는 서술형이 매 시험마다 출제되는 최빈출 섹션입니다. Directory 옵션, HTTP 메서드 제한(LimitExcept), 접근 제어(Order/Deny/Allow), 서버 정보 노출 차단(ServerTokens/ServerSignature), robots.txt, SSL/TLS 설정까지 명령어 단위로 암기해야 합니다.
+
+## 1. 개념 및 배경
+
+웹 서버 취약점은 잘못된 Apache 설정에서 발생합니다. 디렉터리 목록 노출, 불필요한 HTTP 메서드 허용, 서버 버전 정보 노출, 심볼릭 링크 악용 등이 공격자에게 정보를 제공하거나 직접적인 침해 경로가 됩니다. 모든 설정은 `/etc/httpd/conf/httpd.conf`에서 관리합니다.
+
+## 2. 동작 원리 / 구조
+
+### 🗂️ 디렉터리 옵션 보안 (Directory Options)
+
+가장 빈출되는 httpd.conf 설정!
+
+| 옵션 | 설명 | 취약 여부 |
+|------|------|-----------|
+| `Indexes` | index 파일 없을 때 디렉터리 목록 표시 | ⚠️ 취약 (디렉터리 내용 노출) |
+| `-Indexes` | 디렉터리 목록 표시 차단 | ✅ 안전 |
+| `FollowSymLinks` | 심볼릭 링크를 따라가도록 허용 | ⚠️ 취약 (웹 루트 외부 파일 접근 가능) |
+| `-FollowSymLinks` | 심볼릭 링크 추적 차단 | ✅ 안전 |
+| `None` | 모든 옵션 비활성화 | ✅ 가장 안전 |
+
+**취약 설정 vs 보안 설정 비교**
+
+```apache
+# ❌ 취약한 설정
+<Directory /var/www>
+    Options Indexes FollowSymLinks     ← 디렉터리 목록 노출 + 심볼릭링크 허용
+    AllowOverride none
+    Require all granted
+</Directory>
+
+# ✅ 보안 설정
+<Directory /var/www>
+    Options -Indexes -FollowSymLinks   ← 또는 Options None
+    AllowOverride none
+    Require all granted
+</Directory>
+```
+
+> 📌 기출 포인트: `Options Indexes` → `Options -Indexes` 또는 `Options None`으로 변경, `FollowSymLinks` → `-FollowSymLinks`로 변경
+
+### 🚫 HTTP 메서드 제한 (LimitExcept)
+
+불필요한 HTTP 메서드(PUT, DELETE, TRACE, CONNECT 등)를 허용하면 파일 업로드·삭제·정보 수집 공격에 악용됩니다.
+
+**HTTP 메서드 확인 방법 (Telnet 배너 그래빙)**
+
+```text
+# Telnet으로 웹 서버에 연결 후 OPTIONS 메서드 전송
+$ telnet webserver.com 80
+HTTP/1.0 200 OK
+Allow: GET, HEAD, POST, OPTIONS, TRACE      ← TRACE 등 불필요 메서드 노출!
+```
+
+**LimitExcept 설정 (GET, POST만 허용)**
+
+```apache
+# ❌ 취약한 설정 (PUT, DELETE 허용)
+<LimitExcept GET POST PUT DELETE>
+    order allow,deny
+    Deny from all
+</LimitExcept>
+
+# ✅ 보안 설정 (GET, POST만 허용)
+<LimitExcept GET POST>
+    order allow,deny
+    Deny from all
+</LimitExcept>
+```
+
+> 📌 LimitExcept 의미: 괄호 안의 메서드만 허용하고, 나머지는 모두 차단
+
+### 🔍 보완: TRACE 메서드 차단 (`TraceEnable Off`) — XST 대응
+
+TRACE 메서드가 허용되면 XST(Cross-Site Tracing) 공격으로 HttpOnly 쿠키까지 탈취될 수 있습니다. 중요한 점은 **`LimitExcept`/`Limit`으로는 TRACE를 확실히 차단하지 못한다**는 것입니다. Apache의 TRACE 처리는 `Limit` 지시어보다 상위에서 동작하므로, 반드시 전용 지시어를 사용해야 합니다.
+
+```apache
+# /etc/httpd/conf/httpd.conf - TRACE 메서드 완전 차단
+TraceEnable Off
+```
+
+- `TraceEnable Off`: 서버 전역에서 TRACE·TRACK 응답 자체를 비활성화 (권장, 가장 확실)
+- 구버전 등 `TraceEnable` 미지원 환경에서는 `mod_rewrite`로 차단:
+
+```apache
+RewriteEngine On
+RewriteCond %{REQUEST_METHOD} ^(TRACE|TRACK)
+RewriteRule .* - [F]
+```
+
+> 📌 시험 포인트: "TRACE 메서드 차단 명령어를 쓰시오" → 정답은 `TraceEnable Off`. LimitExcept만으로 답하면 불완전합니다.
+
+### 🔒 접근 제어 (Order / Deny / Allow)
+
+특정 IP 또는 전체에 대한 접근을 제한합니다.
+
+```apache
+# 전체 차단 후 특정 IP만 허용
+<Directory /var/www/admin>
+    Order Deny, Allow
+    Deny from all
+    Allow from 192.168.56.30    ← 관리자 IP만 허용
+</Directory>
+
+# 특정 파일 유형 접근 차단 (백업 파일 등)
+<Files ".gz">
+    Order Allow, Deny
+    Deny from all
+</Files>
+
+<Files ".bak">
+    Order Allow, Deny
+    Deny from all
+</Files>
+```
+
+### 🔐 서버 정보 노출 차단 (ServerTokens / ServerSignature)
+
+서버 버전·OS 정보가 노출되면 공격자가 알려진 취약점을 바로 활용할 수 있습니다.
+
+**ServerTokens 옵션별 노출 수준**
+
+| 설정값 | 응답 헤더 내용 | 보안 수준 |
+|--------|---------------|-----------|
+| Full | `Apache/2.4.6 (CentOS) OpenSSL/1.0.1` | 매우 취약 |
+| OS | `Apache/2.4.6 (CentOS)` | 취약 |
+| Min | `Apache/2.4.6` | 보통 |
+| Prod | `Apache` | ✅ 권장 (최소 정보 노출) |
+
+```apache
+# /etc/httpd/conf/httpd.conf
+ServerTokens Prod          ← 서버 종류만 표시 (버전·OS 숨김)
+ServerSignature Off        ← 에러 페이지 하단 서버 정보 미표시
+```
+
+### 📄 robots.txt
+
+검색엔진 크롤러의 접근을 제어하는 파일이지만, 역설적으로 숨기고 싶은 경로가 노출될 수 있습니다.
+
+```text
+User-agent: Googlebot         ← 특정 크롤러에 적용
+Disallow: /cgi-bin            ← CGI 디렉터리 크롤링 차단
+Disallow: /private            ← 개인정보 경로 차단
+Disallow: /.pdf               ← PDF 파일 차단
+Disallow: /.gif               ← GIF 파일 차단
+
+User-agent: *                 ← 모든 크롤러에 적용
+Disallow: /admin              ← 관리자 페이지 차단
+```
+
+> ⚠️ 주의: robots.txt는 강제성이 없으며, 오히려 Disallow 경로가 공격자에게 중요 경로를 알려주는 역효과 발생 가능
+
+### 🏗️ httpd.conf 주요 설정 항목 요약
+
+시험에서 빈칸 채우기로 출제되는 핵심 지시어입니다.
+
+| 지시어 | 설명 |
+|--------|------|
+| `DocumentRoot` | 웹 서비스 루트 디렉터리 경로 |
+| `DirectoryIndex` | 기본 인덱스 파일 (index.html, index.php 등) |
+| `ServerRoot` | Apache 서버 설치 루트 경로 |
+| `Listen` | 수신 포트 번호 (기본 80) |
+| `User / Group` | Apache 프로세스 실행 계정 (apache, nobody 권장) |
+| `Timeout` | 요청 타임아웃 시간 (초) |
+| `KeepAlive` | 지속 연결 사용 여부 (On/Off) |
+| `MaxKeepAliveRequests` | KeepAlive 최대 요청 수 |
+| `KeepAliveTimeout` | KeepAlive 유지 시간 (초) |
+| `RequestReadTimeout` | 요청 헤더·본문 읽기 타임아웃 |
+| `ErrorLog` | 에러 로그 파일 경로 |
+| `CustomLog` | 접근 로그 파일 경로 및 형식 |
+
+### 📊 Apache 접근 로그(CustomLog) 구조
+
+NCSA/ELF Combined 형식 분석 — 로그 분석 서술형 빈출!
+
+```text
+200.3.1.4 - - [30/May/2023:01:20:01 +0900] "GET /bulletin/read.php?no=101&item=book" "HTTP/1.1" 200 3549 "http://test.co.kr/main.php" "Mozilla/5.0..."
+```
+
+| 필드 | 설명 |
+|------|------|
+| `200.3.1.4` | 클라이언트 IP |
+| `-` | ident (RFC931) - 보통 미사용 |
+| `-` | 인증된 사용자 이름 - 미인증 시 `-` |
+| `[날짜시간]` | 요청 시각 |
+| `"GET /경로 HTTP/1.1"` | 요청 메서드, URI, 프로토콜 |
+| `200` | HTTP 응답 상태 코드 |
+| `3549` | 응답 바이트 수 |
+| `"Referer URL"` | 이전 페이지 URL |
+| `"User-Agent"` | 클라이언트 OS·브라우저 정보 |
+
+### 🔐 Apache SSL/TLS 보안 설정
+
+안전하지 않은 SSL 버전을 차단하는 설정입니다.
+
+```apache
+# /etc/httpd/conf.d/ssl.conf 또는 httpd-ssl.conf
+
+# SSLv2, SSLv3 차단 (POODLE, DROWN 취약점 대응)
+SSLProtocol all -SSLv2 -SSLv3
+
+# 특정 버전만 허용
+SSLProtocol -all +TLSv1 +TLSv1.1 +TLSv1.2
+
+# 취약한 암호화 알고리즘 차단
+SSLCipherSuite ALL:!ADH:!EXPORT:!SSLv2:RC4+RSA:+HIGH:+MEDIUM
+
+# RSA 키 길이 2048bit 이상 권장
+```
+
+### 🐘 PHP 보안 설정 (`/etc/php.ini`)
+
+| 설정 항목 | 안전한 값 | 설명 |
+|-----------|-----------|------|
+| `display_errors` | Off | 에러 메시지 화면 노출 차단 |
+| `allow_url_fopen` | Off | RFI(원격 파일 포함) 방어 |
+| `session.gc_maxlifetime` | 600 | 세션 유효 시간 (초) |
+| `session.cookie_httponly` | 1 | 세션 쿠키 HttpOnly 설정 |
+| `session.cookie_secure` | 1 | 세션 쿠키 Secure 설정 (HTTPS 전용) |
+
+### 📁 파일 업로드 취약점 대응 (httpd.conf + .htaccess)
+
+```apache
+# 1. 업로드 파일 크기 제한
+<Directory /var/www/html/uploads>
+    LimitRequestBody 5000000    ← 약 5MB 제한
+</Directory>
+
+# 2. .htaccess - 특정 확장자 실행 차단 (FilesMatch)
+<FilesMatch "\.ph|\.lib|\.sh">
+    Order Allow,DENY
+    Deny From ALL
+</FilesMatch>
+
+# 3. .htaccess - MIME 타입 재정의로 스크립트 실행 차단 (AddType)
+AddType text/html .php .php1 .php2 .php3 .php4 .phtml
+```
+
+> 📌 `AllowOverride All` 설정 시 `.htaccess` 파일이 디렉터리 단위로 httpd.conf를 override 가능
+
+### 🌐 웹 서버 프로세스 권한 최소화
+
+```apache
+# httpd.conf - Apache 실행 계정을 root가 아닌 전용 계정으로
+User apache
+Group apache
+```
+
+```bash
+# 실행 확인
+ps -ef | grep httpd   ← apache 계정으로 실행되고 있는지 확인
+```
+
+## 3. 예시 / 적용 시나리오
+
+**기출 시나리오: httpd.conf Directory 설정 취약점 분석**
+
+```apache
+# 아래 설정의 문제점과 보안 설정으로 수정하시오
+<Directory /var/www>
+    Options Indexes FollowSymLinks
+    AllowOverride none
+    Require all granted
+</Directory>
+```
+
+모범 답안:
+
+- 문제점 1: `Options Indexes` — index 파일이 없을 때 디렉터리 전체 목록이 노출됨
+- 문제점 2: `Options FollowSymLinks` — 심볼릭 링크를 따라가 웹 루트 외부(`/etc/passwd` 등) 접근 가능
+- 수정: `Options -Indexes -FollowSymLinks` 또는 `Options None`으로 변경
+
+**기출 시나리오: 서버 정보 노출 확인 및 차단**
+
+```text
+# Telnet 배너 그래빙으로 서버 정보 수집
+$ telnet webserver.com 80
+Server: Microsoft-IIS/5.0        ← OS, 서버 종류, 버전 노출!
+Allow: GET,HEAD,POST,OPTIONS,TRACE ← TRACE 메서드 허용 → XST 공격 가능
+```
+
+대응:
+
+```apache
+ServerTokens Prod      # 버전·OS 정보 숨김
+ServerSignature Off    # 에러 페이지 서버 정보 숨김
+TraceEnable Off        # TRACE/TRACK 메서드 차단 → XST 공격 방어
+# 허용 메서드 제한(TRACE는 위 TraceEnable Off로 별도 차단)
+<LimitExcept GET POST>
+    Deny from all
+</LimitExcept>
+```
+
+## 4. 실무 및 시험 포인트 정리
+
+| 주제 | 핵심 암기 내용 | 출제 빈도 |
+|------|---------------|-----------|
+| Options Indexes | 디렉터리 목록 노출 → `-Indexes`로 차단 | ⭐⭐⭐ |
+| Options FollowSymLinks | 심볼릭링크 추적 차단 → `-FollowSymLinks` | ⭐⭐⭐ |
+| LimitExcept GET POST | GET, POST 외 메서드 차단 | ⭐⭐⭐ |
+| TraceEnable Off | TRACE/TRACK 차단 → XST 방어 (Limit로는 불충분) | ⭐⭐⭐ |
+| ServerTokens Prod | 버전·OS 정보 최소화 노출 | ⭐⭐⭐ |
+| ServerSignature Off | 에러 페이지 서버 정보 숨김 | ⭐⭐⭐ |
+| LimitRequestBody | 업로드 파일 크기 제한 (5000000 = 5MB) | ⭐⭐⭐ |
+| AddType / FilesMatch | 스크립트 확장자 실행 차단 (.htaccess) | ⭐⭐⭐ |
+| php.ini display_errors Off | 에러 메시지 노출 차단 | ⭐⭐⭐ |
+| AllowOverride All | .htaccess 활성화 조건 | ⭐⭐ |
+| Order Deny,Allow | 전체 차단 후 특정 IP 허용 패턴 | ⭐⭐ |
+| robots.txt 역효과 | Disallow 경로가 공격자에게 정보 제공 | ⭐⭐ |
+| SSLProtocol -SSLv2 -SSLv3 | POODLE·DROWN 취약점 대응 | ⭐⭐ |
+| User apache Group apache | Apache 최소 권한 실행 계정 | ⭐⭐ |
+| CustomLog 형식 분석 | IP, 요청, 상태코드, Referer, User-Agent | ⭐⭐ |
+
+> 📌 서술형 고득점 전략: httpd.conf 문제는 취약 설정을 보여주고 무엇이 문제인지 + 어떻게 수정해야 하는지 2단계 답변을 요구합니다. Options Indexes = 디렉터리 목록 노출, FollowSymLinks = 심볼릭 링크 악용, ServerTokens Full/OS = 버전 정보 노출이라는 취약 원인 → 수정 명령어 연결 고리를 반드시 암기하세요.

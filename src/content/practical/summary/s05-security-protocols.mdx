@@ -1,0 +1,191 @@
+> 섹션 05는 IPsec(AH/ESP/IKE) 동작 구조, SSL/TLS 핸드셰이크 및 버전별 취약점, VPN 터널링 프로토콜 계층 비교가 서술형으로 매우 자주 출제됩니다.
+
+## 1. 개념 및 배경
+
+네트워크 보안 프로토콜은 전송 중인 데이터를 도청·위변조로부터 보호하기 위한 프로토콜입니다. 크게 IP 계층에서 동작하는 IPsec과 전송 계층 위에서 동작하는 SSL/TLS, 그리고 이를 활용하는 VPN 세 가지 축으로 이해하면 됩니다.
+
+## 2. 동작 원리 / 구조
+
+### 🔒 VPN (Virtual Private Network)
+
+VPN은 공중망에서 전용선처럼 안전한 통신 터널을 구성하는 기술입니다.
+
+**VPN 터널링 프로토콜 비교**
+
+| 프로토콜 | 계층 | 개발사 | 특징 |
+| --- | --- | --- | --- |
+| PPTP | 2계층 | Microsoft | PPP 캡슐화, 구현 쉬움, 보안 약함 |
+| L2F | 2계층 | Cisco | PPTP 이전 기술 |
+| L2TP | 2계층 | Microsoft + Cisco | L2F + PPTP 결합, 암호화 없음 → IPsec과 함께 사용 |
+| IPsec | 3계층(IP) | IETF | 강력한 인증·암호화, 현재 표준 |
+
+**VPN 구성 유형**
+
+| 유형 | 설명 |
+| --- | --- |
+| Intranet VPN | 본사↔지사 LAN 간 연결 |
+| Extranet VPN | 서로 다른 기업(인트라넷 간) 연결 |
+| Remote Access VPN | 원격 사용자 → 회사 내부망 연결 (ISP·NAS 활용) |
+
+### 🛡️ IPsec (IP Security)
+
+IPsec은 IP 계층(3계층)에서 동작하며, 인증·무결성·암호화를 제공합니다.
+
+**IPsec 구성 요소 4가지**
+
+| 구성 요소 | 설명 |
+| --- | --- |
+| AH (Authentication Header) | 인증·무결성 제공 (암호화 없음), IP 헤더 포함 보호 |
+| ESP (Encapsulating Security Payload) | 인증·무결성·암호화 모두 제공 |
+| IKE (Internet Key Exchange) | 키 교환 및 SA 협상, `500/UDP` 사용 |
+| SA (Security Association) | 단방향 보안 연결, SAD/SPD에 저장 |
+
+**전송 모드 vs 터널 모드**
+
+| 구분 | 전송 모드 (Transport Mode) | 터널 모드 (Tunnel Mode) |
+| --- | --- | --- |
+| 적용 대상 | 호스트 ↔ 호스트 | 게이트웨이 ↔ 게이트웨이 (VPN) |
+| 보호 범위 | IP 페이로드만 보호 | 전체 원본 IP 패킷 보호 (New IP 헤더 추가) |
+| 사용 예 | 종단 간 직접 통신 | VPN 터널 구성 |
+
+> 🔍 **보완**: 전송 모드는 원본 IP 헤더를 그대로 두고 페이로드만 보호 → 종단 호스트가 직접 IPsec을 처리하는 End-to-End 통신용. 터널 모드는 원본 IP 패킷 전체를 새 패킷에 캡슐화(New IP 헤더 추가)해 내부 주소를 숨기므로 **게이트웨이(보안 라우터/방화벽) 간 Site-to-Site VPN**에 사용합니다.
+
+**AH vs ESP 패킷 구조**
+
+```text
+[AH 전송 모드]
+IP-H | AH-H | IP Payload                                  → IP 헤더 포함 인증
+
+[AH 터널 모드]
+New IP-H | AH-H | IP-H | IP Payload                       → 전체 패킷 인증
+
+[ESP 전송 모드]
+IP-H | ESP-H | IP Payload | ESP-T | ESP Auth              → 페이로드 암호화
+
+[ESP 터널 모드]
+New IP-H | ESP-H | IP-H | IP Payload | ESP-T | ESP Auth   → 전체 암호화
+```
+
+> 📌 AH는 암호화 없음, ESP는 암호화 있음 / 터널 모드는 항상 New IP 헤더 추가
+
+### 🔍 보완: AH vs ESP 제공 서비스 비교
+
+| 보안 서비스 | AH (프로토콜 51) | ESP (프로토콜 50) |
+| --- | --- | --- |
+| 무결성(Integrity) | O | O |
+| 인증(데이터 원천 인증) | O (IP 헤더 포함) | O (IP 헤더 제외, ESP 범위만) |
+| 기밀성(암호화) | X | O |
+| 재전송 방지(Anti-Replay) | O | O |
+
+- **AH**: IP 헤더까지 포함해 인증하므로 NAT 환경에서 헤더 변경 시 무결성 검증 실패 → NAT 통과 불가. 기밀성이 없어 실무에서는 거의 ESP만 사용.
+- **ESP**: 암호화 대상은 원본 페이로드(터널 모드는 원본 IP 패킷 전체). 인증 범위에 바깥 IP 헤더는 포함하지 않아 NAT-T(UDP 4500 캡슐화)로 NAT 통과 가능.
+- 서술형에서 "AH와 ESP 차이"는 **기밀성 제공 여부(핵심)** + 인증 범위(IP 헤더 포함/제외)로 답하면 고득점.
+
+**IKE 2단계 협상**
+
+- Phase 1: 안전한 IKE 채널 수립 (ISAKMP SA 생성)
+- Phase 2: 실제 데이터 보호용 IPsec SA 협상
+- A-B 간 SA는 단방향 → 양방향 통신 시 SA 2개 필요
+
+### 🔐 SSL/TLS
+
+SSL/TLS는 TCP 위에서 동작하며 응용 계층 데이터를 암호화합니다.
+
+**SSL/TLS 버전 역사 및 취약점**
+
+| 버전 | 연도 | 취약점 | 조치 |
+| --- | --- | --- | --- |
+| SSL 1.0 | - | 미공개 | - |
+| SSL 2.0 | 1995 | DROWN 취약 | 비활성화 |
+| SSL 3.0 | 1996 | POODLE 취약 | 비활성화 |
+| TLS 1.0 | 1999 | BEAST, CRIME | 비활성화 권고 |
+| TLS 1.1 | 2006 | 일부 취약 | 비활성화 권고 |
+| TLS 1.2 | 2008 | 안전 | 현재 주로 사용 |
+| TLS 1.3 | 2018 | - | 최신 표준, 1-RTT/0-RTT |
+
+**SSL/TLS 적용 포트**
+
+| 프로토콜 | 포트 |
+| --- | --- |
+| HTTPS | `443/TCP` |
+| SMTPS | `465/TCP` |
+| FTPS | `990/TCP` |
+| Telnets | `992/TCP` |
+| IMAPS | `993/TCP` |
+| POP3S | `995/TCP` |
+
+**SSL/TLS Handshake 전체 흐름 (시험 서술형 단골!)**
+
+```text
+ 1. Client Hello            → 지원 암호 목록, session id, client random
+ 2. Server Hello            ← 선택된 암호, server random
+ 3. Server Certificate      ← 서버 인증서 전송
+ 4. Server Key Exchange     ← 키 교환 파라미터
+ 5. Certificate Request     ← (선택) 클라이언트 인증서 요청
+ 6. Server Hello Done       ← 서버 측 완료 신호
+ 7. Client Certificate      → (선택) 클라이언트 인증서 전송
+ 8. Client Key Exchange     → Pre-Master Secret 전송
+ 9. Certificate Verify      → 서명으로 클라이언트 인증
+10. Change Cipher Spec      → 이후 암호화 통신 전환 알림
+11. Finished                → 핸드셰이크 완료
+12. Change Cipher Spec      ←
+13. Finished                ←
+```
+
+**SSL/TLS Record 프로토콜 구조**
+
+SSL/TLS는 4가지 하위 프로토콜로 구성됩니다:
+
+| 프로토콜 | 역할 |
+| --- | --- |
+| Handshake | 세션 협상, 인증, 키 교환 |
+| Change Cipher Spec | 암호화 전환 신호 |
+| Alert | 오류·경고 메시지 |
+| Application Data | 실제 암호화 데이터 전송 |
+
+### 💥 SSL/TLS 주요 취약점 정리
+
+| 취약점명 | 연도 | CVE | 대상 | 공격 방법 | 대응 |
+| --- | --- | --- | --- | --- | --- |
+| HeartBleed | 2014 | CVE-2014-0160 | OpenSSL | Heartbeat 요청으로 메모리 64KB 유출 | OpenSSL 1.0.1g 업그레이드 |
+| POODLE | 2014 | CVE-2014-3566 | SSL 3.0 | CBC 패딩 오라클 MITM 공격 | SSL v3.0 비활성화 |
+| FREAK | 2015 | CVE-2015-0204 | SSL RSA | 수출용 512bit RSA 강제 다운그레이드 | OpenSSL 패치, OS 업데이트 |
+| LogJam | 2015 | - | TLS DHE | Diffie-Hellman 512bit 다운그레이드 | 2048bit DHE, ECDHE 사용 |
+| DROWN | 2016 | CVE-2016-0800 | SSL v2.0 | SSLv2 크로스 프로토콜 공격 | SSL v2.0 비활성화 |
+
+## 3. 예시 / 적용 시나리오
+
+### 시나리오: IPsec 3가지 설명 기출 서술형
+
+> "IPsec의 3가지 구성 요소(AH, ESP, IKE)에 대해 설명하시오."
+
+모범 답안:
+
+- **AH (Authentication Header)**: IP 헤더를 포함한 패킷 전체에 대해 무결성 및 인증을 제공하는 프로토콜. 암호화는 제공하지 않음. IP 프로토콜 번호 51번
+- **ESP (Encapsulating Security Payload)**: 페이로드를 암호화하고 인증·무결성을 제공하는 프로토콜. AH와 달리 데이터 암호화 포함. IP 프로토콜 번호 50번
+- **IKE (Internet Key Exchange)**: SA(보안 연결) 협상 및 키 교환을 수행하는 프로토콜. UDP 500번 포트 사용. Phase 1(채널 수립)과 Phase 2(데이터 SA 협상)로 구성
+
+### 시나리오: SSL/TLS 취약점 문제
+
+> "OpenSSL 1.0.1, 2014년 4월 발생, Heartbeat 익스텐션 악용, 최대 64KB 메모리 유출 → 이 취약점은?"
+
+답: **HeartBleed (CVE-2014-0160)**
+
+대응: `openssl version -a` 로 버전 확인 → OpenSSL 1.0.1g 이상으로 업그레이드
+
+## 4. 실무 및 시험 포인트 정리
+
+| 주제 | 핵심 암기 내용 | 출제 빈도 |
+| --- | --- | --- |
+| AH vs ESP 차이 | AH=인증·무결성만, ESP=인증+암호화 | ⭐⭐⭐ |
+| 전송 모드 vs 터널 모드 | 터널=New IP 헤더 추가, VPN에 사용 | ⭐⭐⭐ |
+| IKE 포트·역할 | 500/UDP, Phase 1·2, SA 단방향 | ⭐⭐⭐ |
+| SSL/TLS 핸드셰이크 13단계 | Client Hello → Finished 순서 | ⭐⭐⭐ |
+| SSL/TLS 버전 취약점 5개 | HeartBleed, POODLE, FREAK, LogJam, DROWN | ⭐⭐⭐ |
+| HTTPS 포트 및 관련 포트 | 443, 465, 990, 992, 993, 995 | ⭐⭐⭐ |
+| VPN 프로토콜 계층 | PPTP/L2F/L2TP=2계층, IPsec=3계층 | ⭐⭐ |
+| PFS (Perfect Forward Secrecy) | DHE, ECDHE cipher suite 사용 시 적용 | ⭐⭐ |
+| TLS 1.3 특징 | 1-RTT, 0-RTT, 레거시 암호 제거 | ⭐⭐ |
+| HeartBleed 대응 | OpenSSL 1.0.1g 업그레이드, Heartbeat 비활성화 | ⭐⭐ |
+
+> 📌 서술형 고득점 전략: IPsec 문제는 AH/ESP/IKE 역할 + 전송·터널 모드 차이 + 패킷 구조를 세트로 답하세요. SSL/TLS 취약점 문제는 취약점명 + CVE번호 + 공격 원리 + 대응 방법 4가지를 반드시 함께 기술해야 고득점입니다.

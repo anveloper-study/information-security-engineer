@@ -1,0 +1,367 @@
+> 섹션 13은 Snort 룰 문법 완전 분석 + iptables Chain/Target + IDS/IPS 오탐·미탐 개념이 매 시험에 반드시 출제되는 최고 빈도 섹션입니다. 특히 Snort 룰을 직접 작성하거나 분석하는 서술형과 iptables 명령어 해석 문제가 핵심입니다.
+
+## 1. 개념 및 배경
+
+보안장비 운영은 방화벽(iptables), 침입탐지/차단(IDS/IPS), Snort 기반 시그니처 탐지를 중심으로 구성됩니다. 네트워크 트래픽을 분석하여 탐지(IDS) 또는 차단(IPS) 행위를 수행하며, Snort는 오픈소스 NIDS/IPS로 시험의 핵심 도구입니다.
+
+## 2. 동작 원리 / 구조
+
+### 🔥 iptables — Linux 호스트 방화벽
+
+**iptables 3대 Chain과 처리 흐름**
+
+```text
+인터넷 → [INPUT Chain]   → 로컬 프로세스
+         [FORWARD Chain] → 다른 네트워크로 라우팅
+로컬 프로세스 → [OUTPUT Chain] → 외부로 전송
+```
+
+| Chain | 적용 대상 | 설명 |
+|-------|----------|------|
+| INPUT | 들어오는 패킷 | 서버로 들어오는 트래픽 제어 |
+| OUTPUT | 나가는 패킷 | 서버에서 나가는 트래픽 제어 |
+| FORWARD | 통과 패킷 | 라우터처럼 패킷을 다른 인터페이스로 전달할 때 |
+
+**iptables Target (`-j`) 종류**
+
+| Target | 동작 | 특징 |
+|--------|------|------|
+| ACCEPT | 패킷 허용 | 통과 허용 |
+| DROP | 패킷 버림 (묵음) | 응답 없이 차단 (공격자 인식 불가) |
+| REJECT | 패킷 거부 (응답) | ICMP 에러 반환 (공격자 인식 가능) |
+| LOG | 로그 기록 | `/var/log/messages`에 기록 후 다음 규칙 계속 적용 |
+
+**iptables 주요 옵션**
+
+| 옵션 | 설명 |
+|------|------|
+| `-A` | Append (규칙 추가, 맨 끝) |
+| `-I n` | Insert (n번째 위치에 삽입) |
+| `-D n` | Delete (n번째 규칙 삭제) |
+| `-L -n` | 현재 규칙 목록 출력 (숫자로) |
+| `-F` | Flush (모든 규칙 삭제) |
+| `-P` | Policy (기본 정책 설정: ACCEPT/DROP/REJECT) |
+| `-s` | 출발지 IP 지정 |
+| `-d` | 목적지 IP 지정 |
+| `--sport` | 출발지 포트 지정 |
+| `--dport` | 목적지 포트 지정 |
+| `-p` | 프로토콜 지정 (tcp/udp/icmp) |
+| `-j` | Target 지정 |
+
+**iptables Stateful 검사 — 상태 기반 필터링**
+
+| 상태 | 설명 |
+|------|------|
+| NEW | 새 연결 시작 (SYN 패킷) |
+| ESTABLISHED | 이미 연결된 세션의 패킷 |
+| RELATED | 기존 연결과 관련된 새 연결 |
+| INVALID | 어떤 상태에도 해당하지 않는 패킷 |
+
+**실제 기출 iptables 명령어 해석 예시**
+
+```bash
+# SYN Flooding 방어: 80포트로 2초에 30번 이상 SYN 패킷 차단
+iptables -A INPUT -p tcp --syn --dport 80 \
+  -m recent --update --seconds 2 --hitcount 30 \
+  --name SYNDROP -j DROP
+
+# 해석:
+# -A INPUT        : INPUT Chain에 규칙 추가
+# -p tcp --syn    : TCP SYN 패킷 대상
+# --dport 80      : 목적지 포트 80
+# -m recent       : recent 모듈 사용 (IP별 접속 추적)
+# --update        : 해당 IP의 접속 기록 갱신
+# --seconds 2     : 2초 내에
+# --hitcount 30   : 30번 이상이면
+# -j DROP         : DROP 처리
+```
+
+```bash
+# FTP 서버(21포트)에 특정 IP만 허용
+iptables -A INPUT -p tcp -s 172.30.1.55 --dport 21 -j DROP
+
+# NEW 상태이지만 SYN 아닌 패킷 로그 (비정상 패킷 탐지)
+iptables -A INPUT -p tcp ! --syn -m state --state NEW \
+  -j LOG --log-prefix "Faked NEW request"
+```
+
+### 🐗 Snort — 오픈소스 NIDS/IPS
+
+**Snort 기본 정보**
+
+- 1998년 Martin Roesch가 개발한 오픈소스 네트워크 IDS/IPS
+- 시그니처(Signature) 기반 탐지 엔진
+- Rule Header + Rule Body 구조
+
+### 📋 Snort Rule 문법 완전 분석
+
+**Rule 전체 구조**
+
+```text
+[Action] [Protocol] [SrcIP] [SrcPort] [Direction] [DstIP] [DstPort] (Rule Body)
+   ↑          ↑         ↑        ↑          ↑          ↑       ↑
+ └────────────────── Rule Header 부분 ──────────────────┘   Rule Body 부분 ↓
+                                                     (msg; content; sid; ...)
+```
+
+#### ① Rule Header — Action (액션) 종류
+
+| 액션 | 동작 | 설명 |
+|------|------|------|
+| alert | 탐지 + 로그 + 경보 | 가장 많이 사용 |
+| log | 로그만 기록 | 경보 없이 저장 |
+| pass | 무시 (통과) | 해당 패킷 탐지 제외 |
+| drop | 차단 + 로그 | IPS 모드에서 패킷 버림 |
+| reject | 차단 + TCP Reset 전송 | TCP면 RST, UDP/ICMP면 port unreachable |
+| sdrop | 조용히 차단 | 로그 없이 차단 (silent drop) |
+| activate | alert + dynamic 규칙 활성화 | 특정 이벤트 후 동적 규칙 켜기 |
+| dynamic | activate에 의해 활성화 | 평소엔 비활성 |
+
+#### ② Rule Header — 방향 연산자
+
+| 연산자 | 의미 |
+|--------|------|
+| `->` | 단방향 (src → dst) |
+| `<>` | 양방향 (src ↔ dst) |
+
+#### ③ Rule Body — 핵심 옵션
+
+| 옵션 | 설명 | 예시 |
+|------|------|------|
+| `msg` | 경보 메시지 | `msg:"FTP root access"` |
+| `content` | 패킷 내 특정 문자열 검색 | `content:"User root"` |
+| `nocase` | 대소문자 구분 없이 검색 | `nocase` |
+| `offset` | content 검색 시작 위치 (0부터) | `offset:0` |
+| `depth` | offset부터 검색할 범위 | `depth:3` |
+| `distance` | 이전 content 이후 건너뛸 바이트 수 | `distance:2` |
+| `within` | 이전 content 이후 검색 범위 | `within:1` |
+| `pcre` | 정규표현식 검색 | `pcre:"/root/i"` |
+| `flags` | TCP 플래그 검사 | `flags:SF` (SYN+FIN) |
+| `sid` | Rule ID (1~99: 시스템, 100~999999: 공식, 1000000~: 사용자) | `sid:1000100` |
+| `rev` | Rule 버전 | `rev:1` |
+| `classtype` | 공격 분류 | `classtype:attempted-recon` |
+| `priority` | 우선순위 (1=높음) | `priority:1` |
+| `http_method` | HTTP 메서드 검사 | `http_method` |
+
+#### ④ Rule Body — Threshold (이벤트 임계값) ⭐⭐⭐
+
+가장 빈출! threshold 3가지 type 반드시 암기
+
+| type | 동작 | 설명 |
+|------|------|------|
+| limit | 초당 N번까지만 경보 | 과도한 경보 억제 (첫 N번만 알림) |
+| threshold | N번 발생 시마다 경보 1회 | 일정 횟수마다 알림 |
+| both | N번 중 첫 1회만 경보 | limit + threshold 결합 |
+
+```text
+threshold: type [limit|threshold|both],
+           track [by_src|by_dst],
+           count <횟수>,
+           seconds <시간>
+
+track by_src : 출발지 IP 기준 추적
+track by_dst : 목적지 IP 기준 추적
+```
+
+### 📝 Snort 실전 룰 예시 (기출 패턴)
+
+**① FTP root 접근 탐지**
+
+```text
+alert tcp any any -> 10.10.10.0/24 21 \
+  (msg:"FTP root user access"; content:"User root"; nocase; sid:100100;)
+```
+
+**② Telnet 브루트포스 탐지**
+
+```text
+alert tcp 10.10.10.0/24 23 -> any any \
+  (msg:"Telnet login brute force attack"; \
+   content:"Login incorrect"; nocase; \
+   threshold: type limit, track by_dst, count 1, seconds 5; \
+   sid:1000120;)
+```
+
+**③ FTP 브루트포스 탐지**
+
+```text
+alert tcp 10.10.10.0/24 21 -> any any \
+  (msg:"FTP login brute force attack"; \
+   content:"Login incorrect"; nocase; \
+   threshold: type threshold, track by_dst, count 5, seconds 30; \
+   sid:1000130;)
+```
+
+**④ SSH 브루트포스 탐지**
+
+```text
+alert tcp any any -> 10.10.10.0/24 22 \
+  (msg:"SSH login brute force attack"; \
+   content:"SSH-2.0"; nocase; \
+   threshold: type both, track by_src, count 5, seconds 30; \
+   sid:1000150;)
+```
+
+**⑤ HTTP GET Flooding 탐지**
+
+```text
+alert tcp any any -> 10.10.10.0/24 80 \
+  (msg:"HTTP Get Flooding attack"; \
+   content:"GET HTTP1."; depth:13; nocase; \
+   threshold: type threshold, track by_src, count 100, seconds 1; \
+   sid:1000160;)
+```
+
+**⑥ TCP SYN Flooding 탐지**
+
+```text
+alert tcp any any -> 10.10.10.0/24 80 \
+  (msg:"TCP SYN Flooding attack"; flags:S; \
+   threshold: type threshold, track by_src, count 5, seconds 1; \
+   sid:1000170;)
+```
+
+**⑦ Land Attack 탐지**
+
+```text
+alert ip any any -> HOME_NET any \
+  (msg:"Land Attack SRC=DST Same IP Detect"; sameIP; sid:100230;)
+```
+
+**⑧ SYN+FIN 스캔 탐지**
+
+```text
+alert tcp any any -> 10.10.10.0/24 any \
+  (msg:"SYNFIN Scan Detect"; flags:SF; sid:100240;)
+```
+
+**⑨ NULL 스캔 탐지**
+
+```text
+alert tcp any any -> 10.10.10.0/24 any \
+  (msg:"NULL Scan Detect"; flags:!UAPRSF; sid:100270;)
+```
+
+> 📌 flags 값 암기: `S`=SYN, `F`=FIN, `SF`=SYN+FIN, `!UAPRSF`=모든 플래그 없음(NULL 스캔)
+
+**⑩ HeartBleed 탐지 Snort 룰**
+
+```text
+alert tcp any any -> any [443,465,523] \
+  (content:"|18 03 00|"; depth:3; \
+   content:"|01|"; distance:2; within:1; \
+   content:!"|00|"; within:1; \
+   msg:"SSLv3 Malicious Heartbleed Request V2"; sid:1;)
+```
+
+### 🛡️ IDS vs IPS 핵심 개념
+
+**IDS / IPS 비교**
+
+| 구분 | IDS (탐지) | IPS (차단) |
+|------|-----------|-----------|
+| 역할 | 침입 탐지 후 경보 | 침입 탐지 즉시 차단 |
+| 위치 | 네트워크 TAP (비인라인) | 네트워크 인라인 (트래픽 경유) |
+| 장점 | 네트워크 영향 없음 | 실시간 차단 가능 |
+| 단점 | 차단 불가, 사후 대응 | False Positive 시 정상 트래픽 차단 위험 |
+| 도구 | Snort (탐지 모드), tripwire | Snort (IPS 모드), Suricata |
+
+**오탐/미탐 4가지 개념**
+
+| 구분 | 설명 | 위험 |
+|------|------|------|
+| True Positive (TP) | 공격을 공격으로 탐지 (정상 탐지) | — |
+| True Negative (TN) | 정상을 정상으로 판단 (정상) | — |
+| False Positive (FP) | 정상을 공격으로 오탐 (오탐) | 정상 서비스 차단 위험 |
+| False Negative (FN) | 공격을 정상으로 미탐 | 실제 공격 통과 위험 |
+
+> 📌 IPS에서 FP가 위험한 이유: 정상 트래픽을 차단하여 서비스 장애 유발 가능 → IPS는 FP를 최소화하는 것이 핵심
+
+**IDS 탐지 기법 2가지**
+
+| 기법 | 설명 | 장단점 |
+|------|------|--------|
+| 오용 탐지 (Misuse, 시그니처 기반) | 알려진 공격 패턴(시그니처)과 비교 | 알려진 공격만 탐지, 오탐 적음 |
+| 이상 탐지 (Anomaly, 행위 기반) | 정상 기준선(Baseline) 대비 이상 행위 탐지 | 알려지지 않은 공격 탐지 가능, 오탐 많음 |
+
+### 🔒 HIDS vs NIDS
+
+| 구분 | H-IDS (호스트 기반) | N-IDS (네트워크 기반) |
+|------|--------------------|----------------------|
+| 모니터링 대상 | 단일 호스트 (OS, 파일, 로그) | 네트워크 트래픽 전체 |
+| 위치 | 각 서버/PC에 에이전트 설치 | 네트워크 구간 TAP/미러링 |
+| 장점 | 암호화된 트래픽도 탐지, 내부 공격 탐지 | 넓은 범위 모니터링, 네트워크 전체 가시성 |
+| 단점 | 부하 발생, 에이전트 관리 필요 | 암호화 트래픽 탐지 불가 |
+| 도구 | tripwire (무결성 검사), OSSEC | Snort, Suricata |
+
+## 3. 예시 / 적용 시나리오
+
+**기출 시나리오: Snort threshold type 3가지 구분**
+
+```text
+Q. Snort threshold type 3가지를 설명하시오.
+
+1. limit    : count c, seconds s 동안 c번까지만 경보 발생
+              → 동일 이벤트가 과도할 때 경보 억제
+              예: 5초에 1번만 경보
+
+2. threshold: count c, seconds s 동안 c번 발생할 때마다 경보 1회
+              → 일정 횟수가 될 때마다 알림
+              예: 30초에 5번 발생할 때마다 경보
+
+3. both     : count c, seconds s 동안 c번 중 첫 1회만 경보
+              → limit + threshold 결합
+              예: 30초에 5번 중 첫 1회만 경보
+```
+
+**기출 시나리오: iptables 룰 해석**
+
+```text
+Q. 다음 iptables 명령어의 의미를 설명하시오.
+
+iptables -A INPUT -p tcp ! --syn -m state --state NEW \
+  -j LOG --log-prefix "Faked NEW request"
+
+답변:
+- -A INPUT              : INPUT Chain에 규칙 추가
+- -p tcp ! --syn        : SYN 플래그가 없는 TCP 패킷 (비정상 NEW 패킷)
+- -m state --state NEW  : 연결 상태가 NEW인 패킷
+- -j LOG                : /var/log/messages에 로그 기록
+- --log-prefix "Faked NEW request": 로그 식별 접두어
+
+→ 정상적인 TCP NEW 연결은 반드시 SYN으로 시작해야 하는데,
+  SYN 없이 NEW 상태인 패킷은 비정상이므로 로그 기록
+```
+
+**기출 시나리오: IDS 4가지 탐지 판단**
+
+```text
+Q. IDS 탐지 결과의 True Positive, False Positive,
+   True Negative, False Negative를 설명하시오.
+
+- True Positive (TP):  실제 공격 → 공격으로 탐지 (올바른 탐지)
+- False Positive (FP): 정상 트래픽 → 공격으로 오탐 (오탐, 경보 오류)
+- True Negative (TN):  정상 트래픽 → 정상으로 판단 (올바른 무시)
+- False Negative (FN): 실제 공격 → 정상으로 미탐 (공격 누락)
+
+핵심: FP는 서비스 장애, FN은 보안 사고 유발
+```
+
+## 4. 실무 및 시험 포인트 정리
+
+| 주제 | 핵심 암기 내용 | 출제 빈도 |
+|------|---------------|----------|
+| Snort Rule 구조 | Header(액션·프로토콜·IP·포트·방향) + Body(msg·content·sid·threshold) | ⭐⭐⭐ |
+| threshold 3종 | limit(최대 N번), threshold(N번마다 1회), both(N번 중 첫 1회) | ⭐⭐⭐ |
+| content 옵션 | offset(시작위치), depth(범위), distance(건너뜀), within(검색범위) | ⭐⭐⭐ |
+| iptables 3 Chain | INPUT(인바운드), OUTPUT(아웃바운드), FORWARD(통과) | ⭐⭐⭐ |
+| iptables Target | ACCEPT, DROP(묵음), REJECT(응답), LOG | ⭐⭐⭐ |
+| FP vs FN | FP=오탐(정상을 공격으로), FN=미탐(공격을 정상으로) | ⭐⭐⭐ |
+| Snort Action 8종 | alert/log/pass/drop/reject/sdrop/activate/dynamic | ⭐⭐ |
+| TCP flags | S=SYN, F=FIN, SF=SYN+FIN, !UAPRSF=NULL 스캔 | ⭐⭐⭐ |
+| HIDS vs NIDS | tripwire(HIDS), Snort(NIDS), 암호화 트래픽 탐지 차이 | ⭐⭐ |
+| 오용 vs 이상 탐지 | Misuse(시그니처), Anomaly(행위기반/Baseline) | ⭐⭐ |
+| IDS vs IPS | 탐지만/차단가능, TAP위치/인라인 위치, FP 위험성 | ⭐⭐ |
+| iptables Stateful | NEW/ESTABLISHED/RELATED/INVALID 상태 | ⭐⭐ |
+
+> 📌 서술형 고득점 전략: Snort 룰 작성 문제는 Header 부분(`alert tcp src_ip src_port -> dst_ip dst_port`)과 Body 부분(msg, content, nocase, threshold, sid)을 정확한 문법으로 구분하여 작성하세요. threshold 문제는 type 3가지(limit/threshold/both) + track(by_src/by_dst) + count + seconds 4개 항목을 모두 명시해야 고득점입니다.
