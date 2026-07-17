@@ -1,0 +1,197 @@
+> 기출 분석 결과, 이 섹션은 패스워드 정책 설정 명령어(OS별 비교), PAM 모듈, xinetd/TCP Wrapper 접근 제어, 취약한 서비스 차단, 파일 권한 점검 등이 서술형·단답형 모두에서 매우 자주 출제됩니다.
+
+## 1. 개념 및 배경
+
+UNIX/Linux 서버 취약점 섹션은 서버 운영 시 발생하는 계정·인증·서비스·파일 권한 측면의 취약점을 식별하고 조치하는 방법에 관한 내용입니다. 실제 서버 보안 점검(진단) 항목과 거의 동일하므로, 설정 파일 경로 + 설정값 + 이유를 세트로 암기하는 것이 핵심입니다.
+
+## 2. 동작 원리 / 구조
+
+### 🔐 패스워드 정책 (OS별 설정 파일 — 시험 단골)
+
+| OS | 설정 파일 | 최소 길이 파라미터 |
+|----|-----------|---------------------|
+| Linux | `/etc/login.defs` | `PASS_MIN_LEN 8` |
+| Linux (PAM) | `/etc/security/pwquality.conf` | `minlen = 8` |
+| Solaris | `/etc/default/passwd` | `PASSLENGTH=8` |
+| AIX | `/etc/security/user` | `minlen = 8` |
+| HP-UX | `/etc/default/security` | `MIN_PASSWORD_LENGTH=8` |
+
+PAM 패스워드 복잡도 설정 (`pam_cracklib.so` / `pam_pwquality.so`)
+
+```text
+lcredit = -1    → 소문자 최소 1개
+ucredit = -1    → 대문자 최소 1개
+dcredit = -1    → 숫자 최소 1개
+ocredit = -1    → 특수문자 최소 1개
+minlen = 8      → 최소 8자리
+```
+
+### 🔒 계정 잠금 및 root 접근 제어
+
+계정 잠금 정책 (PAM tally)
+
+```text
+# /etc/pam.d/system-auth
+auth    required pam_tally.so deny=5 unlock_time=120 no_magic_root
+account required pam_tally.so no_magic_root reset
+# deny=5 → 5회 실패 시 잠금, unlock_time=120 → 120초 후 해제
+# no_magic_root → root는 잠금 정책 예외 처리
+```
+
+root 직접 로그인 차단 방법
+
+| 서비스 | 차단 방법 |
+|--------|-----------|
+| 콘솔 root 로그인 | `/etc/securetty` — pts/0 등 가상터미널 항목 제거 |
+| SSH root 로그인 | `/etc/ssh/sshd_config` → `PermitRootLogin no` |
+| su 명령 제한 | `usermod -G wheel`로 wheel 그룹 등록 후 `/etc/pam.d/su`에 `auth required pam_wheel.so use_uid` 추가 |
+
+세션 타임아웃 설정
+
+```bash
+# /etc/profile 또는 ~/.bash_profile
+TMOUT=600
+export TMOUT
+```
+
+### 🌐 서비스 접근 제어
+
+xinetd 설정 (`/etc/xinetd.d/서비스명`)
+
+| 지시어 | 의미 |
+|--------|------|
+| `disable = yes/no` | 서비스 비활성화/활성화 |
+| `only_from = IP` | 허용 IP 지정 |
+| `no_access = IP` | 차단 IP 지정 |
+| `access_times = 09:00-18:00` | 허용 접속 시간대 |
+| `cps = 50 10` | 초당 연결 수 50개 초과 시 10초 차단 |
+| `instances = 10` | 최대 동시 연결 수 10개 제한 |
+| `per_source = 3` | 동일 IP 최대 연결 수 3개 |
+
+TCP Wrapper (`/etc/hosts.allow`, `/etc/hosts.deny`)
+
+- 검사 순서: `hosts.allow` → `hosts.deny` (allow가 먼저)
+- `hosts.allow`에 없고 `hosts.deny`에 없으면 → 허용(기본값)
+
+> 🔍 **보완**: TCP Wrapper 검사 순서 상세 — (1) `hosts.allow`를 위에서부터 검사하여 **일치하는 규칙이 있으면 즉시 허용하고 종료**, (2) 없으면 `hosts.deny`를 검사하여 일치하면 **차단**, (3) 두 파일 어디에도 규칙이 없으면 **기본 허용**. 즉 먼저 일치한 규칙이 최종 결정이며, 실제 데몬은 `/etc/inetd.conf`(또는 xinetd)에서 `tcpd`를 경유해 접근 제어를 받습니다. 라이브러리 `libwrap` 지원 데몬에만 적용됩니다.
+
+```text
+# /etc/hosts.allow 예시
+in.telnetd : .aaa.com EXCEPT www.aaa.com
+# → aaa.com 도메인은 허용하되 www.aaa.com만 예외 차단
+
+# /etc/hosts.deny 예시
+ALL : ALL → 나머지 모두 차단
+```
+
+PAM 모듈 구조 (`/etc/pam.d/`) — 한 줄 형식: `Type  Control  Module  [인수]`
+
+| 구성 요소 | 종류 | 설명 |
+|-----------|------|------|
+| Type (기능 유형) | auth | 사용자 인증 |
+| | account | 계정 유효성 확인 |
+| | password | 패스워드 변경 |
+| | session | 세션 열기/닫기 |
+
+### 🔍 보완: PAM Control Flag (제어 플래그)
+
+PAM 문제는 Type뿐 아니라 Control Flag의 동작 차이를 자주 묻습니다. 스택에 나열된 모듈들의 성공/실패 처리 방식을 결정합니다.
+
+| Control Flag | 실패 시 동작 | 성공 시 동작 |
+|--------------|--------------|--------------|
+| `required` | 실패해도 즉시 중단하지 않고 나머지 모듈을 계속 실행한 뒤 최종 실패 처리 (실패 사실 숨김) | 다음 모듈 진행 |
+| `requisite` | 즉시 인증 실패 반환, 이후 모듈 실행 안 함 | 다음 모듈 진행 |
+| `sufficient` | 무시하고 다음 모듈 진행 | 앞선 required 실패가 없으면 즉시 인증 성공 처리 |
+| `optional` | 무시 (성공/실패가 결과에 영향 없음, 스택에 이 모듈 하나뿐일 때만 의미) | 무시 |
+
+> 🔍 **보완**: `required`와 `requisite`는 모두 "반드시 성공해야 함"이지만, `requisite`는 실패 즉시 중단하여 이후 모듈에 정보를 넘기지 않는다는 점이 핵심 차이입니다.
+
+### 📂 취약한 파일 및 서비스 점검
+
+주요 파일 권한 설정
+
+| 파일 | 소유자 | 권한 | 이유 |
+|------|--------|------|------|
+| `/etc/passwd` | root | 644 | 모두 읽기 가능, 쓰기는 root만 |
+| `/etc/shadow` | root | 400 | root만 읽기 |
+| `/etc/hosts` | root | 600 | IP 매핑 파일, root만 읽기/쓰기 |
+| `/etc/xinetd.conf` | root | 600 | xinetd 설정 보호 |
+| `/etc/syslog.conf` | root | 644 | 로그 설정 보호 |
+
+World Writable 파일 탐지
+
+```bash
+find / -perm -2 -exec ls -al {} \;
+chmod o-w [파일명] # 쓰기 권한 제거
+```
+
+소유자 없는 파일 탐지
+
+```bash
+find / -nouser -o -nogroup -exec ls -al {} \;
+```
+
+SUID/SGID 파일 탐지
+
+```bash
+find / -user root -type f -perm -4000 -o -perm -2000 | xargs ls -al
+chmod -s [파일명]     # SUID/SGID 제거
+```
+
+### 🚫 불필요한 서비스 차단
+
+xinetd를 통해 실행되는 아래 서비스들은 DoS 취약점 및 불필요 노출 위험으로 반드시 비활성화(`disable = yes`)해야 합니다.
+
+- `echo`, `discard`, `daytime`, `chargen` — Simple TCP 서비스 (DoS 취약)
+- `rlogin`, `rsh`, `rexec` — r 계열 서비스 (패스워드 없이 접근 가능)
+- `finger`, `tftp`, `talk` — 불필요 정보 노출
+- `rpc.cmsd`, `rusersd` — RPC 취약 서비스
+
+## 3. 예시 / 적용 시나리오
+
+시나리오: 서버 보안 점검 문제 (기출 재현)
+
+"다음 보안 설정 지시사항을 수행하시오."
+
+1. 세션 타임아웃 600초 설정
+2. root의 콘솔 직접 로그인 차단
+3. `/etc/passwd`, `/etc/shadow` 권한 설정
+4. World Writable 파일 탐지 명령어
+5. umask 설정
+
+모범 답안:
+
+```bash
+# 1. 세션 타임아웃 (in /etc/profile)
+export TMOUT=600
+
+# 2. root 콘솔 로그인 차단
+/etc/securetty → pts/0, pts 관련 항목 제거
+
+# 3. 파일 권한
+chmod 644 /etc/passwd     → chown root /etc/passwd
+chmod 400 /etc/shadow     → chown root /etc/shadow
+
+# 4. World Writable 탐지
+find / -type f -perm -2
+
+# 5. umask
+umask 022
+```
+
+## 4. 실무 및 시험 포인트 정리
+
+| 주제 | 핵심 암기 내용 | 출제 빈도 |
+|------|----------------|-----------|
+| OS별 패스워드 최소 길이 설정 | Linux=login.defs, Solaris=default/passwd, AIX=security/user, HP-UX=default/security | ⭐⭐⭐ |
+| PAM 모듈 4가지 Type | auth / account / password / session | ⭐⭐⭐ |
+| PAM tally 계정 잠금 | `deny=5`, `unlock_time=120`, `no_magic_root` | ⭐⭐⭐ |
+| xinetd 지시어 | only_from / no_access / disable / cps / instances | ⭐⭐⭐ |
+| SSH root 차단 | `PermitRootLogin no` (`/etc/ssh/sshd_config`) | ⭐⭐⭐ |
+| 파일 권한 | passwd=644, shadow=400, hosts=600 | ⭐⭐⭐ |
+| 세션 타임아웃 | `export TMOUT=600` (`/etc/profile`) | ⭐⭐ |
+| TCP Wrapper 우선순위 | `hosts.allow` → `hosts.deny` 순서 | ⭐⭐ |
+| 차단 대상 불필요 서비스 | echo, chargen, rlogin, rsh, finger, tftp | ⭐⭐ |
+| World Writable 탐지 | `find / -perm -2` | ⭐⭐ |
+
+> 📌 서술형 고득점 전략: OS별 패스워드 정책 설정 파일 4가지는 표 형태로 통째 암기하세요. PAM 모듈 문제는 Type + Control + 설정값의 의미를 함께 묻는 복합 문제로 출제됩니다.

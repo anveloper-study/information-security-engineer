@@ -1,0 +1,212 @@
+> 섹션 06은 라우터 접근 제어(ACL), 패스워드 암호화 설정, 각종 필터링 기법(Ingress/Egress/Blackhole/Unicast RPF), SNMP·ICMP·Source Route 보안 설정 등 Cisco IOS 명령어를 직접 작성하는 서술형이 매우 자주 출제됩니다.
+
+## 1. 개념 및 배경
+
+라우터는 네트워크 경계에 위치하기 때문에 IP 스푸핑, DDoS, 스캐닝 등 외부 공격의 첫 번째 차단 지점입니다. Cisco 라우터 보안 설정은 크게 ① 라우터 자체 접근 보안, ② ACL을 이용한 트래픽 필터링, ③ 특정 공격 방어 설정 세 가지로 구분됩니다.
+
+## 2. 동작 원리 / 구조
+
+### 🖥️ 라우터 모드 및 패스워드 보안
+
+**Cisco 라우터 4가지 모드**
+
+| 모드 | 프롬프트 | 설명 |
+| --- | --- | --- |
+| User EXEC | `Router>` | 기본 진입, 제한된 명령 |
+| Privileged EXEC | `Router#` | 관리자 모드 |
+| Global Configuration | `Router(config)#` | 전역 설정 |
+| Other Configuration | `Router(config-mode)#` | 인터페이스 등 세부 설정 |
+
+**패스워드 보안 설정 (시험 빈출!)**
+
+```text
+# enable password: Type 0 (평문 저장) → 취약
+Router(config)# enable password asd123
+
+# 저장된 평문 패스워드 암호화 (Type 7)
+Router(config)# service password-encryption
+
+# enable secret: Type 5 (MD5 해시) → 권장
+Router(config)# enable secret asd123
+```
+
+> 📌 `enable password` = 평문 / `enable secret` = MD5 해시 → secret이 우선 적용
+
+> 🔍 **보완**: `service password-encryption`이 적용하는 Type 7은 Cisco 전용 가역(복호화 가능) 방식이라 도구로 쉽게 복원됩니다. 즉 화면 노출 방지용일 뿐 실질 보안은 약하며, 관리자 패스워드는 단방향 해시인 `enable secret`(Type 5 MD5, 신형 IOS는 Type 8/9 scrypt)로 저장해야 합니다.
+
+### 🔐 라우터 접근 제어 (Console / VTY)
+
+**콘솔·VTY 접근 제어**
+
+```text
+# Console 접근 설정
+Router(config)# line console 0
+Router(config-line)# login
+Router(config-line)# password cisco
+
+# VTY (원격 접속) 접근 설정 (0~4: 5개 세션)
+Router(config)# line vty 0 4
+Router(config-line)# login
+Router(config-line)# password cisco
+
+# SSH 접속 시 특정 IP만 허용 (ACL 적용)
+Router(config)# access-list 10 permit host [관리IP]
+Router(config)# access-list 10 deny any
+Router(config)# line vty 0 4
+Router(config-line)# access-class 10 in
+```
+
+### 📋 ACL (Access Control List)
+
+**Standard ACL vs Extended ACL**
+
+| 구분 | Standard ACL | Extended ACL |
+| --- | --- | --- |
+| 번호 범위 | 1~99 (확장 1300~1999) | 100~199 (확장 2000~2699) |
+| 필터링 기준 | 출발지 IP만 | 출발지 IP + 목적지 IP + 프로토콜 + 포트 |
+| 적용 위치 | 목적지 가까이 | 출발지 가까이 |
+
+> 🔍 **보완**: 시험 핵심 암기값은 **Standard 1~99, Extended 100~199**입니다. Standard는 출발지만 보므로 필터링이 광범위 → 목적지 근처에 배치해 정상 트래픽 차단을 최소화하고, Extended는 세밀하므로 출발지 근처에서 조기 차단합니다.
+
+**ACL 설정 예시**
+
+```text
+# Standard ACL: 특정 호스트만 허용
+Router(config)# ip access-list 5 permit host 192.168.159.131
+Router(config)# ip access-list 5 deny any
+
+# Extended ACL 예시 (특정 IP의 UDP 트래픽 차단)
+Router(config)# access-list 101 deny udp any any
+Router(config)# access-list 101 permit ip any any
+```
+
+### 🛡️ 4가지 필터링 기법
+
+| 필터링 유형 | 설명 | 용도 |
+| --- | --- | --- |
+| Ingress Filtering | 외부→내부로 들어오는 패킷을 경계에서 검사, 출발지 IP가 내부 대역으로 위장된(스푸핑) 패킷 차단 (RFC 2827/BCP38) | 유입 IP 스푸핑 방어 |
+| Egress Filtering | 내부→외부로 나가는 패킷 검사, 출발지 IP가 내부 정상 대역이 아닌 패킷 차단 | 내부 호스트의 스푸핑·DRDoS 반사 악용 방지 |
+| Blackhole Filtering | 공격 IP를 Null 0 인터페이스로 라우팅하여 폐기 | DDoS 방어 |
+| Unicast RPF | 패킷의 출발지 IP가 역방향 라우팅 테이블과 일치하는지 검증 | IP 스푸핑 방어 |
+
+> 🔍 **보완**: Ingress/Egress는 "네트워크 경계 기준의 트래픽 방향"으로 정의됩니다. Ingress=경계로 들어옴(외부→내부), Egress=경계에서 나감(내부→외부). 자료에 따라 라우터 인터페이스 관점으로 서술해 반대로 보이는 경우가 있으나, 시험 표준은 위 정의(RFC 2827/BCP38)입니다.
+
+**Blackhole 설정**
+
+```text
+Router(config)# interface null 0
+Router(config-if)# no ip unreachables     ← ICMP 응답 차단
+Router(config-if)# exit
+Router(config)# ip route 211.1.1.1 255.255.255.255 null 0
+```
+
+**Unicast RPF 설정**
+
+```text
+Router(config)# interface FastEthernet 0/0
+Router(config-if)# ip verify unicast reverse-path
+```
+
+### ⚙️ 공격 방어 개별 설정 (시험 빈출 명령어!)
+
+**ICMP Redirect 비활성화** — ICMP Redirect 공격 방어
+
+```text
+Router(config)# interface FastEthernet 0/0
+Router(config-if)# no ip redirects
+```
+
+**Directed Broadcast 차단** — Smurf 공격 방어
+
+```text
+Router(config)# interface FastEthernet 0/0
+Router(config-if)# no ip directed-broadcast
+```
+
+**ICMP Unreachable 차단**
+
+```text
+Router(config)# interface FastEthernet 0/0
+Router(config-if)# no ip unreachables
+```
+
+**IP Source Route 차단** — 출발지 라우팅 옵션 악용 방어
+
+```text
+Router(config)# no ip source-route
+```
+
+### 📡 SNMP 보안 설정
+
+SNMP는 Community String이 평문이므로 기본값 변경 및 접근 제한이 필수입니다.
+
+```text
+# SNMP 완전 비활성화 (가장 강력)
+Router(config)# no snmp-server
+
+# SNMP 허용 시 보안 설정
+Router(config)# snmp-server community [문자열] ro 11    ← RO(읽기 전용)으로 제한
+Router(config)# snmp-server contact [담당자]
+
+# SNMP 접근 ACL 적용
+Router(config)# access-list 11 permit host [관리IP]
+Router(config)# access-list 11 deny any
+Router(config)# interface FastEthernet 0/0
+Router(config-if)# ip access-group 11 in
+```
+
+### 🚫 Private IP 차단 (IP 스푸핑 방어)
+
+외부에서 사설 IP를 출발지로 위조한 패킷 차단
+
+```text
+Router(config)# access-list 15 deny 10.0.0.0 0.255.255.255     ← A클래스 사설IP
+Router(config)# access-list 15 deny 172.16.0.0 0.15.255.255    ← B클래스 사설IP
+Router(config)# access-list 15 deny 192.168.0.0 0.0.255.255    ← C클래스 사설IP
+Router(config)# access-list 15 permit any
+Router(config)# interface FastEthernet 0/0
+Router(config-if)# ip access-group 15 in
+```
+
+## 3. 예시 / 적용 시나리오
+
+### 기출 시나리오: SNMP 설정 서술형
+
+> "라우터 SNMP 보안 설정 4가지를 쓰시오."
+
+모범 답안:
+
+1. **기본 Community String 변경** — `public`, `private` 기본값 변경
+2. **SNMP 버전 업그레이드** — SNMPv3 사용 (인증·암호화 지원)
+3. **ACL로 접근 제한** — 특정 관리 IP만 SNMP 접근 허용
+4. **쓰기 권한 제한** — RW(Read-Write) 제거, RO(Read-Only)만 허용
+
+### 기출 시나리오: Smurf Attack 방어 명령어
+
+> "Smurf Attack 방어를 위한 라우터 설정 명령어를 쓰시오."
+
+```text
+Router(config)# interface FastEthernet 0/0
+Router(config-if)# no ip directed-broadcast
+```
+
+> 이유: Smurf Attack은 브로드캐스트 주소로 ICMP Echo Request를 전송하여 다수의 응답을 유발하므로, Directed Broadcast를 차단하면 방어 가능
+
+## 4. 실무 및 시험 포인트 정리
+
+| 주제 | 핵심 암기 내용 | 출제 빈도 |
+| --- | --- | --- |
+| enable password vs enable secret | password=평문, secret=MD5 해시, secret이 우선 | ⭐⭐⭐ |
+| Standard ACL 번호 | 1~99 (출발지 IP만 필터) | ⭐⭐⭐ |
+| Extended ACL 번호 | 100~199 (IP+포트+프로토콜 필터) | ⭐⭐⭐ |
+| `no ip directed-broadcast` | Smurf Attack 방어 | ⭐⭐⭐ |
+| `no ip redirects` | ICMP Redirect 공격 방어 | ⭐⭐⭐ |
+| `no ip source-route` | Source Route 악용 방어 | ⭐⭐⭐ |
+| Unicast RPF | `ip verify unicast reverse-path` | ⭐⭐⭐ |
+| Blackhole Filtering | `ip route [대상IP] null 0` | ⭐⭐⭐ |
+| SNMP 보안 4가지 | 기본값 변경·v3·ACL·RO만 허용 | ⭐⭐⭐ |
+| VTY 접근 제어 | `access-class [ACL번호] in` | ⭐⭐ |
+| Ingress/Egress 구분 | Ingress=외부→내부 유입 검사(위장 출발지 차단, BCP38), Egress=내부→외부 유출 검사(비정상 출발지 차단) | ⭐⭐ |
+| `no ip unreachables` | ICMP Unreachable 응답 차단, Blackhole 조합 | ⭐⭐ |
+
+> 📌 서술형 고득점 전략: 라우터 보안 문제는 명령어를 정확하게 쓰는 것이 핵심입니다. `no ip directed-broadcast` (Smurf 방어), `ip verify unicast reverse-path` (Unicast RPF), `access-class [번호] in` (VTY 접근 제어), `enable secret` (MD5 패스워드) 이 4개의 명령어를 반드시 암기하세요.

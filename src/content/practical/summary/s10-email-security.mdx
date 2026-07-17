@@ -1,0 +1,260 @@
+> 섹션 10은 메일 전송 구조(MUA→MTA→MDA→MRA), 포트 번호, sendmail access DB 설정, SPF·DKIM·DMARC 동작 원리가 매 시험에 고정 출제되는 영역입니다. 특히 sendmail access 파일의 키워드(RELAY/REJECT/DISCARD)와 makemap 명령어, 그리고 SPF·DKIM·DMARC 3종 세트의 동작 흐름과 차이를 반드시 암기해야 합니다.
+
+## 1. 개념 및 배경
+
+이메일은 발신 → 전송 → 수신 → 저장 → 조회의 단계를 여러 컴포넌트가 분담하여 처리합니다. 이 구조에서 SMTP 릴레이 악용, 스팸·스푸핑, 도메인 위조가 핵심 공격 벡터이며, SPF/DKIM/DMARC는 이를 방어하기 위한 이메일 인증 3대 기술입니다.
+
+## 2. 동작 원리 / 구조
+
+### 📬 메일 시스템 구성 요소 & 포트 번호
+
+시험 필수 암기 구성 요소
+
+| 구성요소 | 역할 | 비고 |
+| --- | --- | --- |
+| MUA (Mail User Agent) | 사용자가 메일을 작성·읽는 클라이언트 | Outlook, Thunderbird 등 |
+| MTA (Mail Transfer Agent) | 메일 서버 간 전송 | Sendmail, Postfix |
+| MDA (Mail Delivery Agent) | MTA에서 수신한 메일을 메일박스에 저장 | Procmail |
+| MRA (Mail Retrieval Agent) | 사용자가 메일박스에서 메일을 가져옴 | POP3, IMAP |
+
+메일 전송 흐름
+
+```text
+① MUA(발신자) → SMTP → ② MTA(발신 서버) → ③ MTA(수신 서버)
+→ ④ MDA(메일박스 저장) → ⑤ MUA(수신자) ← POP3/IMAP ← ⑥ MRA
+```
+
+필수 포트 번호 암기
+
+| 프로토콜 | 포트 | 설명 |
+| --- | --- | --- |
+| SMTP | `25/tcp` | 메일 전송 (MTA↔MTA, 평문) |
+| Submission | `587/tcp` | 메일 제출 (MUA→MTA, STARTTLS·인증 권장) |
+| SMTPS | `465/tcp` | SSL/TLS 적용 SMTP |
+| POP3 | `110/tcp` | 메일 수신 (서버에서 삭제) |
+| POP3S | `995/tcp` | SSL/TLS 적용 POP3 |
+| IMAP | `143/tcp` | 메일 수신 (서버에 유지) |
+| IMAPS | `993/tcp` | SSL/TLS 적용 IMAP |
+
+> 📌 POP3 vs IMAP 차이: POP3는 메일을 로컬로 가져와 서버에서 삭제, IMAP은 서버에 메일을 유지한 채로 동기화
+
+> 🔍 **보완**: 포트 25(SMTP)는 MTA↔MTA 서버 간 전송용이며, MUA가 메일을 처음 제출(submission)할 때는 인증과 STARTTLS가 강제되는 587 포트를 사용하는 것이 표준(RFC 6409)입니다. 465(SMTPS)는 연결 시작부터 암호화(Implicit TLS)하는 방식입니다.
+
+### 🔍 보완: 종단 간(End-to-End) 메일 암호화 — PGP vs S/MIME
+
+SPF/DKIM/DMARC가 "발신 도메인 위조 방지"라면, PGP·S/MIME은 메일 본문 자체를 발신자↔수신자 구간에서 암호화·서명하는 종단 간 보안 기술입니다.
+
+| 구분 | PGP (Pretty Good Privacy) | S/MIME (Secure/MIME) |
+| --- | --- | --- |
+| 신뢰 모델 | 신뢰의 웹(Web of Trust), 사용자 간 상호 서명 | 계층적 PKI, CA가 발급한 인증서 기반 |
+| 키 관리 | 사용자가 직접 키 배포·관리 | X.509 인증서, CA 검증 |
+| 적용 환경 | 개인·소규모, 유연함 | 기업·조직, 중앙 관리 용이 |
+| 제공 기능 | 기밀성, 무결성, 인증, 부인방지, 압축 | 기밀성, 무결성, 인증, 부인방지 |
+
+> 📌 공통 원리: 본문은 대칭키로 암호화하고, 그 대칭키는 수신자 공개키로 암호화(하이브리드 방식). 서명은 발신자 개인키로 수행하여 무결성·인증·부인방지를 제공합니다.
+
+### 📧 SMTP 헤더 구조 (Mail Header vs Envelope)
+
+기출 문제에서 헤더 분석 자주 출제!
+
+| 항목 | 위치 | 설명 |
+| --- | --- | --- |
+| `MAIL FROM` | Envelope(봉투) | MTA 간 실제 발신자 주소 (SPF 검증 대상) |
+| `RCPT TO` | Envelope(봉투) | MTA 간 실제 수신자 주소 |
+| `From` | Mail Header | 사용자 MUA에 표시되는 발신자 (위조 가능) |
+| `To` | Mail Header | 사용자 MUA에 표시되는 수신자 |
+| `Subject` | Mail Header | 제목 |
+| `Received` | Mail Header | 메일 경유 서버 이력 |
+| `Received-SPF` | Mail Header | SPF 검증 결과 (pass/fail/softfail) |
+| `Authentication-Results` | Mail Header | SPF/DKIM/DMARC 인증 결과 종합 |
+
+### 📩 Sendmail Access DB 설정
+
+가장 빈출! access 파일 키워드와 makemap 명령어
+
+| 키워드 | 동작 | 설명 |
+| --- | --- | --- |
+| `OK` | 수신 허용 | 해당 주소/도메인 메일 수신 허용 |
+| `RELAY` | 릴레이 허용 | 해당 주소/도메인의 외부 메일 전달 허용 |
+| `REJECT` | 거부 (에러 응답) | 550(5.7.1) 형식의 에러 반환, 발신자에게 거부 통보 |
+| `DISCARD` | 조용히 삭제 (X) | 에러 없이 메일 버림, 발신자는 전송 성공으로 인식 |
+
+실제 access 파일 예시
+
+```text
+localhost.localdomain    RELAY        ← 로컬호스트는 릴레이 허용
+localhost                RELAY
+127.0.0.1                RELAY
+kca.or.kr                RELAY        ← 특정 도메인 릴레이 허용
+spam.com                 DISCARD      ← 스팸 도메인은 조용히 삭제
+baduser@evil.com         REJECT       ← 특정 사용자 거부 (에러 반환)
+```
+
+access DB 적용 명령어
+
+```bash
+# /etc/mail/access 파일을 수정한 후 DB 파일 생성
+makemap hash /etc/mail/access < /etc/mail/access
+
+# 적용 후 생성되는 파일
+/etc/mail/access.db     # ← 실제 sendmail이 읽는 DB 파일
+```
+
+> 📌 REJECT vs DISCARD 구분: REJECT는 발신자에게 거부 응답 코드(550)를 반환하여 알려주지만, DISCARD는 응답 없이 조용히 삭제하여 발신자가 성공으로 인식함
+
+### 🛡️ SPF (Sender Policy Framework)
+
+발신 도메인에서 허용된 IP 목록을 DNS TXT 레코드에 등록하여 발신 IP를 검증합니다.
+
+SPF 동작 흐름
+
+```text
+1. 발신자 도메인 관리자가 DNS TXT 레코드에 허용 IP 등록
+   예: "v=spf1 ip4:203.0.113.0/24 include:mail.example.com -all"
+
+2. 수신 MTA가 MAIL FROM의 도메인 추출
+
+3. DNS에서 해당 도메인의 SPF TXT 레코드 조회
+
+4. 실제 발신 IP가 SPF에 등록된 IP인지 비교
+
+5. 검증 결과를 Received-SPF 헤더에 기록
+   - pass: 허용 IP에서 발송 (정상)
+   - fail: 허용 IP 외에서 발송 (위조 의심)
+   - softfail: 의심되나 확실하지 않음 (~all)
+   - neutral: 정책 없음 (?all)
+```
+
+### 🔏 DKIM (DomainKeys Identified Mail)
+
+발신 서버가 개인키로 메일 헤더에 디지털 서명을 추가하고, 수신 서버가 DNS에 공개된 공개키로 서명을 검증합니다.
+
+DKIM 동작 흐름
+
+```text
+1. 발신 도메인 관리자가 공개키를 DNS TXT 레코드에 등록
+
+2. 발신 MTA가 메일 헤더에 개인키로 DKIM-Signature 서명 추가
+
+3. 수신 MTA가 DKIM-Signature 헤더에서 도메인 추출
+
+4. DNS에서 공개키 조회
+
+5. 공개키로 서명 검증 → 변조 여부 확인
+   - dkim=pass: 서명 검증 성공 (전송 중 변조 없음)
+   - dkim=fail: 서명 검증 실패 (변조 또는 위조)
+```
+
+> 📌 SPF vs DKIM 차이: SPF는 발신 IP 주소를 검증, DKIM은 메일 내용의 무결성과 도메인 진위를 검증
+
+### 🔒 DMARC (Domain-based Message Authentication, Reporting and Conformance)
+
+SPF와 DKIM 검증 결과를 종합하여 정책을 적용하는 최상위 이메일 인증 체계입니다.
+
+DMARC 동작 흐름
+
+```text
+1. 발신 도메인 관리자가 DNS TXT 레코드에 DMARC 정책 등록
+   예: _dmarc.example.com TXT "v=DMARC1; p=reject; rua=mailto:report@example.com"
+
+2. 수신 서버가 SPF + DKIM 검증 수행
+
+3. DMARC 정책(p=)에 따라 처리
+   - p=none:       아무 조치 없이 보고만 함
+   - p=quarantine: 스팸함으로 이동
+   - p=reject:     메일 거부
+
+4. 검증 결과를 보고서(rua)로 발신 도메인에 전송
+```
+
+SPF / DKIM / DMARC 비교 정리
+
+| 기술 | 검증 대상 | 등록 위치 | 주요 목적 |
+| --- | --- | --- | --- |
+| SPF | 발신 IP 주소 | DNS TXT 레코드 | IP 기반 발신자 위조 차단 |
+| DKIM | 메일 서명(내용 무결성) | DNS TXT 레코드 (공개키) | 메일 변조 및 도메인 위조 차단 |
+| DMARC | SPF + DKIM 결과 종합 | DNS TXT 레코드 | 정책 집행 + 리포팅 |
+
+### 📧 이메일 헤더 분석 예시 (기출 시나리오)
+
+실제 기출 이메일 헤더 분석 문제
+
+```text
+1  Delivered-To: hbiden@rosmontseneca.com
+6  Return-Path: <v.pozharskyi.ukraine@gmail.com>
+7  Received: from mail-qc0-x232.google.com
+10 version=TLSv1.2 cipher=ECDHE-RSA-AES128-GCM-SHA256 bits=128
+12 Received-SPF: pass (google.com: domain of v.pozharskyi...
+14     spf=pass smtp.mail=v.pozharskyi.ukraine@gmail.com
+15     dkim=pass header.i=@gmail.com
+```
+
+헤더 분석 포인트
+
+- `Return-Path` → Envelope From (SPF 검증 대상, 실제 발신 주소)
+- `Received-SPF: pass` → SPF 검증 통과 (발신 IP가 DNS 등록 IP와 일치)
+- `dkim=pass` → DKIM 서명 검증 성공 (메일 변조 없음)
+- `TLSv1.2 cipher=ECDHE-RSA-AES128-GCM-SHA256` → 전송 중 암호화 적용 (ECDHE: 키 교환, RSA: 인증, AES128-GCM: 암호화, SHA256: 무결성)
+
+### 🛠️ 이메일 보안 도구
+
+| 도구 | 역할 |
+| --- | --- |
+| Procmail | 메일 필터링 규칙 적용 (MDA 대체/연동) |
+| SpamAssassin | 스팸 메일 점수 기반 필터링, RBL(실시간 블랙리스트) 활용 |
+| Inflex | 메일 첨부파일 바이러스 필터링 (Inbound/Outbound) |
+| Sanitizer | 위험 첨부파일 제거 플러그인 |
+
+## 3. 예시 / 적용 시나리오
+
+### 기출 시나리오: sendmail access DB 설정 및 makemap
+
+```text
+# /etc/mail/access 파일
+localhost.localdomain    RELAY
+localhost                RELAY
+127.0.0.1                RELAY
+spam.com                 DISCARD   ← spam.com에서 온 메일 조용히 삭제
+```
+
+문제: spam.com을 REJECT로 변경하면 어떤 차이가 있는가?
+
+답: DISCARD는 수신 후 조용히 버려 발신자가 성공으로 인식하지만, REJECT는 550 에러 코드를 반환하여 발신자에게 거부를 통보합니다. 스팸 발신자에게 정보를 주지 않으려면 DISCARD가 더 효과적입니다.
+
+makemap 명령어
+
+```bash
+makemap hash /etc/mail/access < /etc/mail/access
+# → /etc/mail/access.db 생성
+# sendmail.cf에서 이 DB 파일을 참조
+```
+
+### 기출 시나리오: SPF/DKIM/DMARC 작동 설명
+
+> 발신 도메인을 사칭한 스팸 메일을 차단하기 위한 3가지 이메일 인증 기술을 설명하시오.
+
+모범 답안 구조:
+
+1. SPF — 발신 도메인의 DNS TXT 레코드에 허용 IP 목록을 등록하고, 수신 서버가 실제 발신 IP와 비교하여 IP 위조를 탐지함
+2. DKIM — 발신 서버가 개인키로 메일에 디지털 서명을 추가하고, 수신 서버가 DNS의 공개키로 서명을 검증하여 메일 변조 여부를 확인함
+3. DMARC — SPF·DKIM 검증 결과를 종합하여 none/quarantine/reject 정책을 집행하고 검증 보고서를 발신 도메인에 전달함
+
+## 4. 실무 및 시험 포인트 정리
+
+| 주제 | 핵심 암기 내용 | 출제 빈도 |
+| --- | --- | --- |
+| 포트 번호 | SMTP 25, Submission 587, SMTPS 465, POP3 110, POP3S 995, IMAP 143, IMAPS 993 | ⭐⭐⭐ |
+| PGP vs S/MIME | PGP=신뢰의 웹, S/MIME=PKI(X.509/CA) 기반 종단 간 암호화 | ⭐⭐ |
+| MUA/MTA/MDA/MRA 역할 구분 | 작성→전송→저장→수신 각 담당 구성요소 | ⭐⭐⭐ |
+| RELAY vs REJECT vs DISCARD | RELAY=릴레이 허용, REJECT=에러 거부, DISCARD=조용한 삭제 | ⭐⭐⭐ |
+| makemap hash 명령어 | access 파일 → access.db 변환 | ⭐⭐⭐ |
+| SPF 동작 원리 | DNS TXT에 허용 IP 등록 → 수신 MTA가 발신 IP 비교 검증 | ⭐⭐⭐ |
+| DKIM 동작 원리 | 개인키 서명 → DNS 공개키로 검증, 메일 무결성 보장 | ⭐⭐⭐ |
+| DMARC 동작 원리 | SPF+DKIM 종합 정책, p=none/quarantine/reject | ⭐⭐⭐ |
+| Received-SPF 헤더 해석 | pass/fail/softfail/neutral 의미 | ⭐⭐ |
+| Mail Header vs Envelope | MAIL FROM(봉투) vs From(헤더) 위조 가능성 | ⭐⭐ |
+| POP3 vs IMAP 차이 | POP3=서버 삭제, IMAP=서버 유지·동기화 | ⭐⭐ |
+| SpamAssassin | RBL 기반 스팸 점수 필터링 | ⭐⭐ |
+| TLS 헤더 분석 | ECDHE(키교환) RSA(인증) AES128-GCM(암호화) SHA256(무결성) | ⭐⭐ |
+
+> 📌 서술형 고득점 전략: sendmail access 문제는 반드시 RELAY/REJECT/DISCARD의 동작 차이와 makemap hash 명령어를 함께 기술하세요. SPF/DKIM/DMARC 비교 문제는 각각 검증 대상(IP/서명/종합), DNS 등록 방식, 실패 시 처리 방법의 3단계 구조로 서술하면 고득점이 가능합니다.

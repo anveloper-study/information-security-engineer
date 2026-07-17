@@ -1,0 +1,169 @@
+> 섹션 01은 리눅스/윈도우 인증·계정 관리, 파일 시스템, 프로세스·권한, 버퍼 오버플로우가 반복 출제되는 핵심 영역입니다.
+
+## 1. 개념 및 배경
+
+시스템 기본학습은 운영체제(OS)의 인증, 계정, 파일 권한, 프로세스 구조를 이해하고, 이를 기반으로 한 공격 기법과 방어 방법을 아는 것이 목표입니다. 리눅스와 윈도우 양쪽 모두 출제됩니다.
+
+## 2. 동작 원리 / 구조
+
+### 🔐 리눅스 인증 파일 구조
+
+| 파일 | 경로 | 내용 | 필드 구조 |
+|------|------|------|-----------|
+| passwd | `/etc/passwd` | 사용자 계정 정보 | `ID : x : UID : GID : 설명 : 홈 : 쉘` |
+| shadow | `/etc/shadow` | 암호화된 패스워드 | `ID : Salt : 암호화PW : 마지막변경 : 최소사용 : 최대사용 : 경고 : 비활성 : 만료` |
+| group | `/etc/group` | 그룹 정보 | `그룹명 : x : GID : 멤버목록` |
+
+shadow 파일 암호화 알고리즘 — 반드시 암기!
+
+```text
+$1$ = MD5
+$5$ = SHA-256
+$6$ = SHA-512
+```
+
+### 📂 파일 권한 (SUID/SGID/Sticky Bit)
+
+| 권한 | 표기 | 의미 | 보안 위협 |
+|------|------|------|-----------|
+| SUID | `rws` (user) | 실행 시 파일 소유자 권한으로 실행 | root 소유 SUID → root 권한 탈취 가능 |
+| SGID | `rws` (group) | 실행 시 그룹 소유자 권한으로 실행 | 그룹 권한 상승 |
+| Sticky Bit | `t` (others) | `/tmp` 등에서 본인 파일만 삭제 가능 | 공유 디렉토리 보호 |
+
+```bash
+# SUID 파일 탐지 명령어 (시험 단골)
+find / -user root -type f -perm -4000 -o -perm -2000 | xargs ls -al
+chmod -s [파일명]     # SUID/SGID 제거
+```
+
+> 🔍 **보완**: SUID 실제 공격 예시 — `/usr/bin/passwd`는 일반 사용자가 자신의 패스워드를 변경할 때 root 소유인 `/etc/shadow`에 써야 하므로 SUID(`-rwsr-xr-x`)가 설정됩니다. 정당한 용도지만, root 소유 SUID 바이너리에 취약점(예: 버퍼 오버플로우)이 있으면 공격자가 root 권한으로 임의 코드를 실행할 수 있어 권한 상승(Privilege Escalation) 통로가 됩니다.
+
+### 🔍 보완: umask 계산 원리
+
+umask는 파일·디렉토리 생성 시 제거할 권한을 지정하는 값입니다. 기본 최대 권한에서 umask를 빼서 계산합니다.
+
+```text
+파일 기본 권한 = 666 - umask   (파일은 실행권한을 기본 부여하지 않음)
+디렉토리 기본 권한 = 777 - umask
+
+예) umask 022 →
+  파일:      666 - 022 = 644 (rw-r--r--)
+  디렉토리:  777 - 022 = 755 (rwxr-xr-x)
+예) umask 027 →
+  파일:      666 - 027 = 640
+  디렉토리:  777 - 027 = 750
+```
+
+> 🔍 **보완**: 정확히는 뺄셈이 아니라 비트 AND NOT(`기본권한 & ~umask`) 연산이지만, 시험에서는 위 뺄셈 방식으로 계산해도 결과가 동일합니다. 보안 강화 권장값은 `umask 022` 또는 더 엄격한 `umask 027`입니다.
+
+### 📁 MAC Time (inode 시간 속성)
+
+| 속성 | 의미 | 변경 시점 |
+|------|------|-----------|
+| Mtime (Modification) | 내용 수정 시간 | 파일 내용 변경 시 |
+| Atime (Access) | 접근 시간 | 파일 읽기 시 |
+| Ctime (Change) | 속성 변경 시간 | 권한, 소유자 변경 시 |
+
+> 💡 침해사고 분석 시 Mtime 기준으로 악성 파일 탐지
+
+### 📋 로그 파일 구조 (자주 출제)
+
+| 로그 파일 | 경로 | 형식 | 확인 명령 |
+|-----------|------|------|-----------|
+| utmp | `/var/run/utmp` | 바이너리 | `w`, `who`, `finger` |
+| wtmp | `/var/log/wtmp` | 바이너리 | `last` |
+| btmp | `/var/log/btmp` | 바이너리 | `lastb` |
+| lastlog | `/var/log/lastlog` | 바이너리 | `lastlog` |
+| acct/pacct | `/var/account/pacct` | 바이너리 | `lastcomm` |
+
+### 🔁 프로세스 관련
+
+프로세스는 PCB(Process Control Block)에 상태, PID, 레지스터 값 등을 저장하며, `fork()` → `exec()` 순서로 새 프로세스를 생성합니다.
+
+주요 시그널
+
+- SIGINT (2) — Ctrl+C 인터럽트
+- SIGKILL (9) — 강제 종료 (무시 불가)
+- SIGSTOP (19) — 프로세스 일시 정지
+
+### 💥 버퍼 오버플로우 (Buffer Overflow)
+
+1. 개념: Stack 영역에서 입력값이 버퍼 크기를 초과 → RET(복귀주소)를 Shellcode 주소로 덮어씀
+2. 공격 흐름:
+   - 취약한 함수(`strcpy`, `gets`)로 버퍼 초과 입력
+   - RET 값을 Shellcode 또는 `ESP`(스택 포인터) 주소로 변조
+   - `NOP Sled (0x90)`를 활용해 Shellcode 앞에 배치
+3. 대응책: 아래 🔍 보완 참고
+
+```bash
+# ASLR 확인/설정
+cat /proc/sys/kernel/randomize_va_space
+# 0 = 비활성, 1 = 부분 무작위, 2 = 완전 무작위
+echo 2 > /proc/sys/kernel/randomize_va_space
+```
+
+### 🔍 보완: 버퍼 오버플로우 대응책 (서술형 필수)
+
+버퍼 오버플로우 대응은 ASLR 하나만으로 부족합니다. 서술형에서는 아래 여러 기법을 함께 나열해야 고득점입니다.
+
+| 대응 기법 | 원리 | 계층 |
+|-----------|------|------|
+| Stack Canary (스택 가드) | 버퍼와 RET 사이에 카나리(Canary) 값을 삽입, 함수 리턴 직전 변조 여부 검사 → 변조 시 프로세스 강제 종료 | 컴파일러 (`gcc -fstack-protector`) |
+| DEP / NX bit | 스택·힙 등 데이터 영역에 실행 권한 제거 → 삽입된 Shellcode 실행 차단 | CPU/OS |
+| ASLR | 스택·힙·라이브러리 등 메모리 주소를 실행 시마다 무작위 배치 → 공격자가 RET 목표 주소 예측 불가 | OS 커널 |
+| RELRO (Relocation Read-Only) | GOT 등 재배치 영역을 읽기 전용으로 만들어 GOT Overwrite 차단 | 링커 (`-Wl,-z,relro,-z,now`) |
+
+> 🔍 **보완**: 근본 대응은 안전한 함수 사용입니다. `strcpy→strncpy`, `gets→fgets`, `sprintf→snprintf`, `strcat→strncat` 등 경계 검사가 있는 함수로 대체합니다.
+
+### 🪟 윈도우 인증 구조
+
+| 구성요소 | 역할 |
+|----------|------|
+| LSA (Local Security Authority) | 인증 정책 관리, SAM DB 접근 |
+| SAM (Security Account Manager) | 로컬 계정/패스워드 해시 저장 |
+| SRM (Security Reference Monitor) | 접근 제어, 감사 로그 생성 |
+| NTLM | Challenge/Response 기반 인증 |
+
+NTLM 인증 과정 (서술형 단골)
+
+1. 클라이언트 → 서버: 인증 요청
+2. 서버 → 클라이언트: Challenge 전송
+3. 클라이언트: 패스워드 해시로 Challenge를 암호화 → Response 생성
+4. 서버: Response 검증 후 인증 허가
+
+### 🗂️ 윈도우 레지스트리 주요 키
+
+| 키 | 약어 | 저장 내용 |
+|----|------|-----------|
+| `HKEY_LOCAL_MACHINE` | HKLM | OS 설정, SAM, 소프트웨어 설치 정보 |
+| `HKEY_CURRENT_USER` | HKCU | 현재 로그인 사용자 설정 |
+| `HKEY_CLASSES_ROOT` | HKCR | 파일 확장자-프로그램 연결 |
+| `HKEY_USERS` | HKU | 모든 사용자 프로파일 |
+| `HKEY_CURRENT_CONFIG` | HKCC | 현재 하드웨어 구성 |
+
+## 3. 예시 / 적용 시나리오
+
+시나리오: SUID 악용 공격
+
+공격자가 root 소유의 SUID가 설정된 바이너리를 발견하면 해당 프로그램 실행 시 자동으로 root 권한을 획득할 수 있습니다. 관리자는 주기적으로 `find / -perm -4000` 명령으로 불필요한 SUID 파일을 탐지하고 제거해야 합니다.
+
+시나리오: /etc/shadow 해시 크래킹
+
+공격자가 `$6$salt$...` 형태의 shadow 파일을 탈취하면 SHA-512 오프라인 사전 공격으로 패스워드 복원을 시도합니다. 대응책은 강력한 패스워드 정책(`/etc/security/pwquality.conf`)과 패스워드 복잡도 설정입니다.
+
+## 4. 실무 및 시험 포인트 정리
+
+| 주제 | 핵심 키워드 | 출제 빈도 |
+|------|-------------|-----------|
+| shadow 파일 해시 알고리즘 | `$1$`=MD5, `$5$`=SHA-256, `$6$`=SHA-512 | ⭐⭐⭐ |
+| SUID 탐지 명령어 | `find -perm -4000`, `chmod -s` | ⭐⭐⭐ |
+| MAC Time | M=수정, A=접근, C=속성변경 | ⭐⭐⭐ |
+| 로그 파일 | wtmp→`last`, btmp→`lastb`, utmp→`who` | ⭐⭐⭐ |
+| 버퍼 오버플로우 | RET 덮어쓰기, NOP(0x90) / 대응: Stack Canary·DEP(NX)·ASLR·RELRO | ⭐⭐⭐ |
+| NTLM 인증 | Challenge/Response 4단계 | ⭐⭐ |
+| 레지스트리 키 | HKLM, HKCU, HKCR, HKU, HKCC | ⭐⭐ |
+| umask | `umask 022` → 파일 644, 디렉토리 755 | ⭐⭐ |
+| PAM 모듈 타입 | auth, account, password, session | ⭐⭐ |
+| crontab 필드 순서 | 분 시 일 월 요일 명령어 | ⭐⭐ |
+
+> 📌 서술형 대비 포인트: NTLM 인증 4단계 흐름, 버퍼 오버플로우 공격/대응(ASLR), `/etc/shadow` 필드 설명은 서술형으로 자주 출제되므로 반드시 흐름을 순서대로 설명할 수 있어야 합니다.

