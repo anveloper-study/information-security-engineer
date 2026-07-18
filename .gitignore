@@ -25,3 +25,6 @@ npm-debug.log*
 
 # Cache
 .cache/
+
+# 기출복원 원문 (저작권상 로컬 전용, 배포 금지)
+docs/past-exams/
