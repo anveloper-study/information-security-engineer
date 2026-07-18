@@ -146,6 +146,11 @@ routes.push({
   description: "정보보안기사 실기 시험 대비 전 과목 핵심 요약 정리",
 });
 routes.push({
+  path: "/practical/frequency",
+  title: "기출 빈출 - 실기 대비",
+  description: "정보보안기사 실기 기출복원 3~29회 분석 기반 빈출 주제·유형·전략 정리",
+});
+routes.push({
   path: "/practical/terms",
   title: "약어/용어 - 실기 대비",
   description: "정보보안기사 실기 시험 대비 필수 약어와 핵심 용어 암기",
