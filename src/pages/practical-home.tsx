@@ -32,6 +32,23 @@ export default function PracticalHome() {
           </Link>
 
           <Link
+            to="/practical/frequency"
+            className="block p-6 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 hover:border-violet-500 dark:hover:border-violet-400 hover:shadow-sm transition"
+          >
+            <div className="flex items-center gap-4">
+              <span className="w-12 h-12 flex items-center justify-center bg-violet-50 dark:bg-violet-900/50 text-violet-600 dark:text-violet-400 rounded-lg">
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 13h2v8H3v-8zM9 3h2v18H9V3zm6 6h2v12h-2V9z" />
+                </svg>
+              </span>
+              <div>
+                <h2 className="text-lg font-medium text-gray-900 dark:text-white">기출 빈출</h2>
+                <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">기출복원 분석 기반 빈출 주제·전략을 확인합니다</p>
+              </div>
+            </div>
+          </Link>
+
+          <Link
             to="/practical/terms"
             className="block p-6 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 hover:border-emerald-500 dark:hover:border-emerald-400 hover:shadow-sm transition"
           >
